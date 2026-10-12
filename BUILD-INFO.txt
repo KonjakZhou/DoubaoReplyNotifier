@@ -1,0 +1,6 @@
+version=4.0.0
+app_binary_sha256=09543cdf9ddc915712ecad509a05eafaeadd38ce14192d472c5b3f34bbd9d875
+source_sha256=969e5ad8edf0924a856f2cc09d2ef5ab4965b1b9e9938df095072c28f890d77b
+architectures=x86_64 arm64
+completion_source=saman exit_intercept blocker lifecycle
+waiting_source=main-agent trajectory explicit interaction tools
