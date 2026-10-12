@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 4
+    var version = 5
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
@@ -155,9 +155,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let workspace = NSWorkspace.shared
         // 1) 已运行：按 Bundle ID 找到主应用并激活其所有窗口。
         if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == Self.targetBundleID }) {
-            // 同步激活主应用及其所有窗口；返回值表示请求是否成功发出。
-            let success = running.activate(from: .current,
-                                           options: [.activateAllWindows])
+            // macOS 14 使用新激活 API；macOS 13 保留兼容路径。
+            let success: Bool
+            if #available(macOS 14.0, *) {
+                success = running.activate(from: .current, options: [.activateAllWindows])
+            } else {
+                success = running.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            }
             if !success {
                 recordActivationError(
                     stage: "activate_running",
@@ -576,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func loadState() {
         guard let data = try? Data(contentsOf: stateFile),
               let decoded = try? JSONDecoder().decode(PersistedNotifierState.self, from: data) else { return }
-        persistedState = decoded.version == 4 ? decoded : PersistedNotifierState()
+        persistedState = decoded.version == 5 ? decoded : PersistedNotifierState()
     }
 
     private func pruneProcessedEvents() {
