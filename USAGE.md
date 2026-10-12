@@ -1,6 +1,22 @@
-# 豆包工作原生任务通知器 4.1
+# 豆包工作原生任务通知器 4.2
 
 这是一个独立的 macOS 菜单栏应用。它直接监听豆包工作在本机写入的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。
+
+## 4.2 修复：点击通知只关闭、不回到豆包
+
+现场证据（macOS unified log）：usernoted `[com.apple.unc:application]` 已收到并解析了两个 response——
+消息体点击 `<response action: contents ... foreground: true>` 与“打开豆包”按钮 `<response action: action actIdent: com.local.doubao-reply-notifier.action.activate ... foreground: false>`，
+但通知器侧 `didReceive` 此前零日志、从不激活豆包。根因是旧版入口处的 `guard let marker = userInfo[...] as? String` 在桥接类型不符时**静默 `completionHandler()` 返回**，
+既不激活也不留痕。本版修复：
+
+- `didReceive` 第一行无条件写结构化日志 `NOTIFICATION_RESPONSE_RECEIVED`（仅 id/action/category/marker 类型/userInfo 键，不记录敏感值）；
+- marker 判定改为兼容 NSString/String 桥接的 `robustMarkerMatches`，并以稳定 `categoryIdentifier == reply` 作为受控兜底校验，桥接失败不再静默退出；
+- 所有分支写 `RESPONSE_ACCEPTED` / `RESPONSE_IGNORED(reason=not_controlled|dismiss|unknown_action)`；
+- 激活不再把 macOS14 `running.activate(from:.current)` 当作唯一动作：统一 `urlForApplication(bundleID)` + `openApplication(config.activates=true)`，已运行时先记 `ACTIVATE_EXISTING` 并尽力 `activateIgnoringOtherApps`，随后一律 `openApplication` 可靠前置/兜底；
+- 激活结果写 `LAUNCH_SUCCEEDED` / `LAUNCH_FAILED`，失败仍落 `activation-errors.log`。
+
+排查关键词（`log show --predicate 'process == "DoubaoReplyNotifier"'`）：
+`NOTIFICATION_RESPONSE_RECEIVED`、`RESPONSE_ACCEPTED`、`RESPONSE_IGNORED`、`ACTIVATE_EXISTING`、`LAUNCH_SUCCEEDED`、`LAUNCH_FAILED`、`ACTIVATE_ERROR`。
 
 ## 4.1 新增：点击通知回到豆包
 
@@ -148,13 +164,15 @@ interaction.authorize_folder
 node tests/test-trajectory.mjs
 node tests/test-activation-router.mjs
 node tests/test-native-contract.mjs
+swiftc tests/test-marker-bridging.swift -o /tmp/test-marker-bridging && /tmp/test-marker-bridging
 bash -n install.sh
 bash tests/test-integration.sh "Doubao Reply Notifier.app/Contents/MacOS/DoubaoReplyNotifier"
 ```
 
 - `test-trajectory.mjs`：等待用户信号的纯逻辑单测。
-- `test-activation-router.mjs`：点击通知路由与激活目标校验的纯逻辑单测（默认点击/显式 activate → 激活；dismiss/未知 → 忽略；browser 变体拒绝；completion 恰好一次）。
-- `test-native-contract.mjs`：源码契约检查，禁止 CDP/DOM/Renderer/辅助功能/硬编码深链，禁止启动 browser 变体。
+- `test-activation-router.mjs`：点击通知路由与激活目标校验的纯逻辑单测（默认点击/显式 activate → 激活；dismiss/未知 → 忽略；marker 桥接与 category 兜底；openApplication 兜底路径；browser 变体拒绝；completion 恰好一次）。
+- `test-marker-bridging.swift`：marker 桥接单元测试（String/NSString 命中，NSNumber/缺失/错值不命中，对照旧 `as? String` 静默退出）。
+- `test-native-contract.mjs`：源码契约检查，禁止 CDP/DOM/Renderer/辅助功能/硬编码深链，禁止启动 browser 变体，校验新日志与 openApplication 兜底。
 - 集成测试覆盖：历史不重放、极简回复完成、普通文字防误报、等待覆盖完成、重复注销、并发 blocker 逆序注销和重启幂等。
 
 ## 卸载

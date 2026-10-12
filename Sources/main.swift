@@ -114,6 +114,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 options: []
             )
         ])
+        // 一次性测试投递：由环境变量指定唯一标题，走与生产完全一致的 marker+category 投递路径，
+        // 投递后短暂等待即退出（用于人工点击回归，避免常驻第二实例）。
+        if let testTitle = environment["DOUBAO_NOTIFIER_TEST_TITLE"], !testTitle.isEmpty {
+            let testBody = environment["DOUBAO_NOTIFIER_TEST_BODY"] ?? "点击此通知应激活豆包主应用。"
+            let uniq = String(UUID().uuidString.prefix(8))
+            NSLog("ONESHOT_POST_BEGIN id=doubao-reply-oneshot-%@ title=%@", uniq, testTitle)
+            postNotification(identifier: "doubao-reply-oneshot-\(uniq)", title: testTitle, body: testBody) { _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { NSApp.terminate(nil) }
+            }
+            return
+        }
         loadState()
         pruneProcessedEvents()
         configureMenu()
@@ -131,58 +142,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        // 只处理带受控 action 标记的通知；其它 App 的通知一律放行并恰好一次回调。
-        let userInfo = response.notification.request.content.userInfo
-        guard let marker = userInfo[Self.actionMarkerKey] as? String,
-              marker == Self.actionMarkerValue else {
+        let request = response.notification.request
+        let userInfo = request.content.userInfo
+        let actionIdentifier = response.actionIdentifier
+        let categoryIdentifier = request.content.categoryIdentifier
+        // A) 第一行无条件记录：仅 id / action / category / marker 类型 / userInfo 键，绝不记录敏感值。
+        //    用于判定系统 response 是否真正到达本 delegate（旧版此处无日志，导致桥接失败被静默吞掉）。
+        let markerType: String = {
+            guard let raw = userInfo[Self.actionMarkerKey] else { return "missing" }
+            return String(describing: type(of: raw))
+        }()
+        let userInfoKeys = userInfo.keys.map { String(describing: $0) }.sorted().joined(separator: ",")
+        NSLog("NOTIFICATION_RESPONSE_RECEIVED id=%@ action=%@ category=%@ markerType=%@ userInfoKeys=%@",
+              request.identifier, actionIdentifier, categoryIdentifier, markerType, userInfoKeys)
+
+        // B) 受控校验：marker（兼容 NSString/String/桥接）命中，或稳定 category 命中其一。
+        //    二者都不命中才放行忽略；杜绝 as? String 桥接失败被静默退出、从不激活豆包。
+        let markerMatches = Self.robustMarkerMatches(userInfo[Self.actionMarkerKey])
+        let categoryMatches = (categoryIdentifier == Self.replyCategoryIdentifier)
+        guard markerMatches || categoryMatches else {
+            NSLog("RESPONSE_IGNORED reason=not_controlled id=%@ action=%@", request.identifier, actionIdentifier)
             completionHandler()
             return
         }
-        switch response.actionIdentifier {
+
+        switch actionIdentifier {
         case UNNotificationDefaultActionIdentifier, Self.activateActionIdentifier:
             // 默认点击（通知主体）或显式“打开豆包”按钮 → 激活/启动豆包主应用。
+            NSLog("RESPONSE_ACCEPTED reason=activate id=%@ action=%@", request.identifier, actionIdentifier)
             activateDoubaoApp(completion: completionHandler)
         case UNNotificationDismissActionIdentifier:
-            // 划掉/关闭：不做任何事，仅结束。
+            // 划掉/关闭：不激活，仅结束。
+            NSLog("RESPONSE_IGNORED reason=dismiss id=%@ action=%@", request.identifier, actionIdentifier)
             completionHandler()
         default:
-            NSLog("ACTIVATE_IGNORED_ACTION id=%@", response.actionIdentifier)
+            NSLog("RESPONSE_IGNORED reason=unknown_action id=%@ action=%@", request.identifier, actionIdentifier)
             completionHandler()
         }
     }
 
+    // B) 兼容 NSString / Swift String / 桥接类型的 marker 判定；缺失或类型不符一律返回 false（由 category 兜底）。
+    private static func robustMarkerMatches(_ value: Any?) -> Bool {
+        guard let value else { return false }
+        if let s = value as? String { return s == actionMarkerValue }
+        if let ns = value as? NSString { return ns.isEqual(to: actionMarkerValue) }
+        return String(describing: value) == actionMarkerValue
+    }
+
     private func activateDoubaoApp(completion: @escaping () -> Void) {
         let workspace = NSWorkspace.shared
-        // 1) 已运行：按 Bundle ID 找到主应用并激活其所有窗口。
-        if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == Self.targetBundleID }) {
-            // macOS 14 使用新激活 API；macOS 13 保留兼容路径。
-            let success: Bool
-            if #available(macOS 14.0, *) {
-                success = running.activate(from: .current, options: [.activateAllWindows])
-            } else {
-                success = running.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
-            }
-            if !success {
-                recordActivationError(
-                    stage: "activate_running",
-                    reason: "activate_returned_false",
-                    detail: "bundleID=\(Self.targetBundleID) pid=\(running.processIdentifier)"
-                )
-            }
-            completion()
-            return
-        }
-        // 2) 未运行：按 Bundle ID 定位应用。
+        // D) 统一入口：先按 Bundle ID 定位豆包主应用（已运行 / 未运行都走这一条路）。
         guard let appURL = workspace.urlForApplication(withBundleIdentifier: Self.targetBundleID) else {
             recordActivationError(
                 stage: "locate",
                 reason: "bundle_id_not_found",
                 detail: "bundleID=\(Self.targetBundleID)"
             )
+            NSLog("LAUNCH_FAILED stage=locate reason=bundle_id_not_found bundleID=%@", Self.targetBundleID)
             completion()
             return
         }
-        // 3) 校验解析结果：先显式挡掉 browser helper，再做精确相等校验。
+        // 校验解析结果：先显式挡掉 browser helper，再做精确相等校验。
         guard let resolvedID = Bundle(url: appURL)?.bundleIdentifier else {
             recordActivationError(
                 stage: "verify",
@@ -210,10 +230,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             completion()
             return
         }
-        // 4) 启动并激活。
+        // E) 已运行：记录 ACTIVATE_EXISTING，并尽力调用旧版可靠 API activateIgnoringOtherApps。
+        //    但它不是唯一动作——随后统一用 openApplication(activates=true) 真正激活/兜底，
+        //    不再把 macOS14 的 running.activate(from:.current) 当作唯一激活手段。
+        if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == Self.targetBundleID }) {
+            NSLog("ACTIVATE_EXISTING pid=%d bundleID=%@", running.processIdentifier, Self.targetBundleID)
+            running.activate(options: [.activateIgnoringOtherApps])
+        }
+        // D) 统一真正激活/启动：openApplication + activates=true。
+        //    对已运行实例会把它带到前台；对未运行实例则启动并激活。
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        workspace.openApplication(at: appURL, configuration: config) { [weak self] _, error in
+        workspace.openApplication(at: appURL, configuration: config) { [weak self] runningApp, error in
             guard let self else { completion(); return }
             if let error {
                 self.recordActivationError(
@@ -221,6 +249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     reason: "open_application_failed",
                     detail: "bundleID=\(resolvedID) url=\(appURL.path) error=\(error.localizedDescription)"
                 )
+                NSLog("LAUNCH_FAILED bundleID=%@ error=%@", resolvedID, error.localizedDescription)
+            } else {
+                NSLog("LAUNCH_SUCCEEDED bundleID=%@ pid=%d", resolvedID, runningApp?.processIdentifier ?? -1)
             }
             completion()
         }
