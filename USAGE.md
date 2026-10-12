@@ -1,6 +1,19 @@
-# 豆包工作原生任务通知器 4.0
+# 豆包工作原生任务通知器 4.1
 
 这是一个独立的 macOS 菜单栏应用。它直接监听豆包工作在本机写入的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。
+
+## 4.1 新增：点击通知回到豆包
+
+通知器发出的每条通知都带有受控 action 标记。点击通知（默认点击）或通知上的“打开豆包”按钮时：
+
+- 豆包主应用（Bundle ID `com.bot.pc.doubao`）已在运行：按 Bundle ID 找到并激活，同时激活其所有窗口；
+- 豆包主应用未运行：通过 NSWorkspace 按 Bundle ID 定位主应用并启动；
+- 划掉通知（dismiss）或收到未知 action：不做任何动作；
+- 定位失败、Bundle ID 校验不通过、或解析结果指向 `*.browser` 辅助进程：拒绝启动，并把结构化错误写入
+  `~/Library/Application Support/DoubaoReplyNotifier/activation-errors.log`；
+- 全程不使用 CDP、DOM、Renderer、辅助功能 API，也不硬编码任何会话/深链 URL。
+
+> 注意：本插件只激活/启动豆包主应用 `com.bot.pc.doubao`，绝不会启动 `com.bot.pc.doubao.browser`，也不修改 `/Applications/Doubao.app`。
 
 ## 4.0 修复内容
 
@@ -120,12 +133,16 @@ interaction.authorize_folder
 
 ```bash
 node tests/test-trajectory.mjs
+node tests/test-activation-router.mjs
 node tests/test-native-contract.mjs
 bash -n install.sh
 bash tests/test-integration.sh "Doubao Reply Notifier.app/Contents/MacOS/DoubaoReplyNotifier"
 ```
 
-集成测试覆盖：历史不重放、极简回复完成、普通文字防误报、等待覆盖完成、重复注销、并发 blocker 逆序注销和重启幂等。
+- `test-trajectory.mjs`：等待用户信号的纯逻辑单测。
+- `test-activation-router.mjs`：点击通知路由与激活目标校验的纯逻辑单测（默认点击/显式 activate → 激活；dismiss/未知 → 忽略；browser 变体拒绝；completion 恰好一次）。
+- `test-native-contract.mjs`：源码契约检查，禁止 CDP/DOM/Renderer/辅助功能/硬编码深链，禁止启动 browser 变体。
+- 集成测试覆盖：历史不重放、极简回复完成、普通文字防误报、等待覆盖完成、重复注销、并发 blocker 逆序注销和重启幂等。
 
 ## 卸载
 

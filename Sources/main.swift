@@ -154,19 +154,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let workspace = NSWorkspace.shared
         // 1) 已运行：按 Bundle ID 找到主应用并激活其所有窗口。
         if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == Self.targetBundleID }) {
-            running.activate(from: .current,
-                             options: [.activateAllWindows, .activateIgnoringOtherApps],
-                             completionHandler: { [weak self] success in
-                guard let self else { completion(); return }
-                if !success {
-                    self.recordActivationError(
-                        stage: "activate_running",
-                        reason: "activate_completion_false",
-                        detail: "bundleID=\(Self.targetBundleID) pid=\(running.processIdentifier)"
-                    )
-                }
-                completion()
-            })
+            // 同步激活主应用及其所有窗口；返回值表示请求是否成功发出。
+            let success = running.activate(from: .current,
+                                           options: [.activateAllWindows])
+            if !success {
+                recordActivationError(
+                    stage: "activate_running",
+                    reason: "activate_returned_false",
+                    detail: "bundleID=\(Self.targetBundleID) pid=\(running.processIdentifier)"
+                )
+            }
+            completion()
             return
         }
         // 2) 未运行：按 Bundle ID 定位应用。
@@ -179,22 +177,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             completion()
             return
         }
-        // 3) 校验解析结果确实是主应用，且绝不能是 browser helper。
-        let resolvedID = Bundle(url: appURL)?.bundleIdentifier
-        guard resolvedID == Self.targetBundleID else {
+        // 3) 校验解析结果：先显式挡掉 browser helper，再做精确相等校验。
+        guard let resolvedID = Bundle(url: appURL)?.bundleIdentifier else {
             recordActivationError(
                 stage: "verify",
-                reason: "resolved_bundle_mismatch",
-                detail: "expected=\(Self.targetBundleID) resolved=\(resolvedID ?? "nil") url=\(appURL.path)"
+                reason: "unresolved_bundle_id",
+                detail: "url=\(appURL.path)"
             )
             completion()
             return
         }
-        guard let resolvedID, !resolvedID.hasSuffix(".browser") else {
+        guard !resolvedID.hasSuffix(".browser") else {
             recordActivationError(
                 stage: "verify",
                 reason: "refused_browser_helper",
-                detail: "bundleID=\(resolvedID ?? "nil") url=\(appURL.path)"
+                detail: "bundleID=\(resolvedID) url=\(appURL.path)"
+            )
+            completion()
+            return
+        }
+        guard resolvedID == Self.targetBundleID else {
+            recordActivationError(
+                stage: "verify",
+                reason: "resolved_bundle_mismatch",
+                detail: "expected=\(Self.targetBundleID) resolved=\(resolvedID) url=\(appURL.path)"
             )
             completion()
             return
@@ -232,7 +238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if FileManager.default.fileExists(atPath: activationErrorFile.path),
                let handle = try? FileHandle(forWritingTo: activationErrorFile) {
                 defer { try? handle.close() }
-                try? handle.seekToEnd()
+                _ = try? handle.seekToEnd()
                 try? handle.write(contentsOf: line)
             } else {
                 try? line.write(to: activationErrorFile)

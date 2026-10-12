@@ -16,14 +16,35 @@ const mustContain = [
   ['concurrent blocker ledger', /activeInterceptors:\s*\[String:\s*\[String:\s*String\]\]/],
   ['event replay guard', /processedEvents\[eventID\]\s*==\s*nil/],
   ['stable request identifier', /UNNotificationRequest\(identifier:\s*identifier/],
-  ['notification rollback', /processedEvents\.removeValue\(forKey:\s*eventID\)/]
+  ['notification rollback', /processedEvents\.removeValue\(forKey:\s*eventID\)/],
+  // 点击通知激活豆包主应用（本轮新增契约）
+  ['didReceive delegate implemented', /func userNotificationCenter\(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse/],
+  ['controlled action marker written', /content\.userInfo = \[Self\.actionMarkerKey: Self\.actionMarkerValue\]/],
+  ['reply category registered', /setNotificationCategories/],
+  ['explicit activate action button', /UNNotificationAction\(/],
+  ['default click handled', /UNNotificationDefaultActionIdentifier/],
+  ['dismiss action ignored', /UNNotificationDismissActionIdentifier/],
+  ['unknown action ignored', /ACTIVATE_IGNORED_ACTION/],
+  ['target main bundle id constant', /targetBundleID = "com\.bot\.pc\.doubao"/],
+  ['running-app activate all windows', /activate\(from: \.current,\s*options: \[\.activateAllWindows\]\)/],
+  ['locate by bundle id when not running', /urlForApplication\(withBundleIdentifier: Self\.targetBundleID\)/],
+  ['launch via openApplication', /openApplication\(at: appURL, configuration: config\)/],
+  ['resolved bundle verified', /resolvedID == Self\.targetBundleID/],
+  ['browser helper suffix refused', /hasSuffix\("\.browser"\)/],
+  ['structured activation error log', /recordActivationError\(\s*stage:/],
+  ['no CDP/DOM/renderer for activation', /openApplication/],
+  ['userInfo marker guard before activate', /guard let marker = userInfo\[Self\.actionMarkerKey\] as\? String/]
 ];
 const mustNotContain = [
   ['assistant text completion inference', /record\.tool_calls\?\.isEmpty/],
   ['DOM observer', /MutationObserver|querySelector|innerText|data-task-status/],
   ['CDP injection', /remote-debugging|Runtime\.evaluate|webSocketDebuggerUrl|injectIntoChatRenderers/],
   ['accessibility inference', /AXUIElement|ApplicationServices|AXIsProcessTrusted/],
-  ['local renderer event server', /NWListener|127\.0\.0\.1:17853|listener_heartbeat/]
+  ['local renderer event server', /NWListener|127\.0\.0\.1:17853|listener_heartbeat/],
+  ['never resolve browser bundle id', /withBundleIdentifier: "com\.bot\.pc\.doubao\.browser"/],
+  ['no hardcoded session deep link', /doubao\.com\/chat|doubao\.com\/conversation|https:\/\/[^"\\ ]*\/chat\//],
+  ['no window listing via accessibility', /CGWindowListCopyWindowInfo|NSAccessibility/],
+  ['no launching browser to satisfy click', /openApplication\(at: .*doubao\.browser|launchApplication\(at: .*doubao\.browser/]
 ];
 for (const [name, pattern] of mustContain) {
   if (!pattern.test(source)) throw new Error(`native contract missing: ${name}`);
