@@ -5,27 +5,64 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 5
+    var version = 6
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
     var conversationTitles: [String: String] = [:]
     var activeRunIDs: [String: String] = [:]
     var activeInterceptors: [String: [String: String]] = [:]
+    var pendingInteractions: [String: [String: String]] = [:]
     var terminalRuns: [String: String] = [:]
     var lastEventSource = ""
     var lastEventType = ""
     var conversationTitle = ""
     var lastEventID = ""
     var lastEventAt = ""
+
+    private enum CodingKeys: String, CodingKey {
+        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, conversationTitles
+        case activeRunIDs, activeInterceptors, pendingInteractions, terminalRuns
+        case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
+        version = 6
+        processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
+        trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
+        runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
+        conversationTitles = try values.decodeIfPresent([String: String].self, forKey: .conversationTitles) ?? [:]
+        activeRunIDs = try values.decodeIfPresent([String: String].self, forKey: .activeRunIDs) ?? [:]
+        activeInterceptors = try values.decodeIfPresent([String: [String: String]].self, forKey: .activeInterceptors) ?? [:]
+        pendingInteractions = try values.decodeIfPresent([String: [String: String]].self, forKey: .pendingInteractions) ?? [:]
+        terminalRuns = try values.decodeIfPresent([String: String].self, forKey: .terminalRuns) ?? [:]
+        lastEventSource = try values.decodeIfPresent(String.self, forKey: .lastEventSource) ?? ""
+        lastEventType = try values.decodeIfPresent(String.self, forKey: .lastEventType) ?? ""
+        conversationTitle = try values.decodeIfPresent(String.self, forKey: .conversationTitle) ?? ""
+        lastEventID = try values.decodeIfPresent(String.self, forKey: .lastEventID) ?? ""
+        lastEventAt = try values.decodeIfPresent(String.self, forKey: .lastEventAt) ?? ""
+        terminalRuns = terminalRuns.filter { $0.value != "waiting_user" }
+        if sourceVersion < 6 {
+            runtimeLogOffsets.removeAll()
+            activeRunIDs.removeAll()
+            activeInterceptors.removeAll()
+            pendingInteractions.removeAll()
+        }
+    }
 }
 
 private struct TrajectoryRecord: Decodable {
     struct ToolCall: Decodable {
         struct Function: Decodable { let name: String? }
+        let id: String?
         let function: Function?
     }
     let role: String?
+    let tool_call_id: String?
     let tool_calls: [ToolCall]?
 }
 
@@ -47,7 +84,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let conversationTitleReader = ConversationTitleReader()
     private let maxProcessedEvents = 4000
     private let processedEventTTL: TimeInterval = 7 * 24 * 60 * 60
-    private let completionGraceSeconds: TimeInterval = 3.0
+    private lazy var completionGraceSeconds: TimeInterval = {
+        Double(environment["DOUBAO_NOTIFIER_COMPLETION_GRACE_SECONDS"] ?? "") ?? 3.0
+    }()
+    private lazy var interactionResumeGraceSeconds: TimeInterval = {
+        Double(environment["DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS"] ?? "") ?? 30.0
+    }()
     private let environment = ProcessInfo.processInfo.environment
     // 受控 action 标记：只有带该 userInfo 标记的通知才会被 didReceive 处理。
     private static let actionMarkerKey = "com.local.doubao-reply-notifier.action"
@@ -471,7 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             persistedState.activeInterceptors[conversationID] = interceptors
             guard interceptors.isEmpty, persistedState.activeRunIDs[conversationID] == runID else { return }
             if scheduleTerminals {
-                scheduleCompletion(conversationID: conversationID, runID: runID)
+                scheduleCompletion(conversationID: conversationID, runID: runID, delay: completionGraceSeconds)
             } else {
                 persistedState.activeRunIDs.removeValue(forKey: conversationID)
                 persistedState.activeInterceptors.removeValue(forKey: conversationID)
@@ -479,16 +521,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func scheduleCompletion(conversationID: String, runID: String) {
+    private func scheduleCompletion(conversationID: String, runID: String, delay: TimeInterval) {
         if persistedState.terminalRuns[runID] != nil { return }
+        guard (persistedState.pendingInteractions[conversationID] ?? [:]).isEmpty else { return }
         if let pending = pendingCompletions.removeValue(forKey: conversationID) { pending.timer.invalidate() }
-        let timer = Timer.scheduledTimer(withTimeInterval: completionGraceSeconds, repeats: false) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             guard let self,
                   self.persistedState.activeRunIDs[conversationID] == runID,
                   (self.persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty,
+                  (self.persistedState.pendingInteractions[conversationID] ?? [:]).isEmpty,
                   self.persistedState.terminalRuns[runID] == nil else { return }
             self.pendingCompletions.removeValue(forKey: conversationID)
             self.persistedState.activeRunIDs.removeValue(forKey: conversationID)
+            self.persistedState.activeInterceptors.removeValue(forKey: conversationID)
+            self.persistedState.pendingInteractions.removeValue(forKey: conversationID)
             self.emitTerminal(type: "reply_completed", conversationID: conversationID, runID: runID, source: "runtime:exit_intercept")
         }
         pendingCompletions[conversationID] = (runID, timer)
@@ -535,22 +581,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for rawLine in chunk.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(rawLine)
             guard let data = line.data(using: .utf8),
-                  let record = try? JSONDecoder().decode(TrajectoryRecord.self, from: data),
-                  record.role == "assistant" else { continue }
-            let toolNames = Set((record.tool_calls ?? []).compactMap { $0.function?.name })
-            guard let waitingTool = toolNames.first(where: { waitingTools.contains($0) }) else { continue }
-            let runID = persistedState.activeRunIDs[watch.conversationID] ?? "trajectory|\(sha256(line))"
-            if let pending = pendingCompletions.removeValue(forKey: watch.conversationID) { pending.timer.invalidate() }
-            persistedState.terminalRuns[runID] = "waiting_user"
-            persistedState.activeRunIDs.removeValue(forKey: watch.conversationID)
-            persistedState.activeInterceptors.removeValue(forKey: watch.conversationID)
-            emitTerminal(type: "waiting_user", conversationID: watch.conversationID, runID: runID, source: "trajectory:\(waitingTool)")
+                  let record = try? JSONDecoder().decode(TrajectoryRecord.self, from: data) else { continue }
+
+            if record.role == "assistant" {
+                for call in record.tool_calls ?? [] {
+                    guard let waitingTool = call.function?.name, waitingTools.contains(waitingTool) else { continue }
+                    let interactionID = call.id ?? sha256(line)
+                    let waitingEventID = "\(watch.conversationID)|waiting_user|\(sha256(interactionID))"
+                    guard persistedState.processedEvents[waitingEventID] == nil else { continue }
+                    var interactions = persistedState.pendingInteractions[watch.conversationID] ?? [:]
+                    guard interactions[interactionID] == nil else { continue }
+                    interactions[interactionID] = waitingTool
+                    persistedState.pendingInteractions[watch.conversationID] = interactions
+                    if let pending = pendingCompletions.removeValue(forKey: watch.conversationID) { pending.timer.invalidate() }
+                    emitWaiting(
+                        conversationID: watch.conversationID,
+                        interactionID: interactionID,
+                        source: "trajectory:\(waitingTool)"
+                    )
+                }
+                continue
+            }
+
+            guard record.role == "tool", let interactionID = record.tool_call_id,
+                  var interactions = persistedState.pendingInteractions[watch.conversationID],
+                  interactions.removeValue(forKey: interactionID) != nil else { continue }
+            persistedState.pendingInteractions[watch.conversationID] = interactions
+            guard interactions.isEmpty,
+                  let runID = persistedState.activeRunIDs[watch.conversationID],
+                  (persistedState.activeInterceptors[watch.conversationID] ?? [:]).isEmpty else { continue }
+            scheduleCompletion(
+                conversationID: watch.conversationID,
+                runID: runID,
+                delay: interactionResumeGraceSeconds
+            )
         }
+    }
+
+    private func emitWaiting(conversationID: String, interactionID: String, source: String) {
+        let eventID = "\(conversationID)|waiting_user|\(sha256(interactionID))"
+        guard persistedState.processedEvents[eventID] == nil else { return }
+        emitEvent(
+            type: "waiting_user",
+            eventID: eventID,
+            conversationID: conversationID,
+            source: source,
+            terminalRunID: nil
+        )
     }
 
     private func emitTerminal(type: String, conversationID: String, runID: String, source: String) {
         let eventID = "\(conversationID)|\(type)|\(sha256(runID))"
         guard persistedState.processedEvents[eventID] == nil else { return }
+        emitEvent(
+            type: type,
+            eventID: eventID,
+            conversationID: conversationID,
+            source: source,
+            terminalRunID: runID
+        )
+    }
+
+    private func emitEvent(type: String, eventID: String, conversationID: String, source: String, terminalRunID: String?) {
         let title: String
         if let currentTitle = conversationTitleReader.title(conversationID: conversationID, doubaoDataRoot: doubaoDataRoot) {
             title = currentTitle
@@ -560,7 +652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         let body = type == "waiting_user" ? "等待你确认或提供信息" : "当前对话轮次回复完成"
         persistedState.processedEvents[eventID] = ISO8601DateFormatter().string(from: Date())
-        persistedState.terminalRuns[runID] = type
+        if let terminalRunID { persistedState.terminalRuns[terminalRunID] = type }
         recordState(source: source, eventID: eventID, eventType: type, conversationTitle: title)
         guard saveState() else {
             persistedState.processedEvents.removeValue(forKey: eventID)
@@ -611,7 +703,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func loadState() {
         guard let data = try? Data(contentsOf: stateFile),
               let decoded = try? JSONDecoder().decode(PersistedNotifierState.self, from: data) else { return }
-        persistedState = decoded.version == 5 ? decoded : PersistedNotifierState()
+        persistedState = decoded
     }
 
     private func pruneProcessedEvents() {

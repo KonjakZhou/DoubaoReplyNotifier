@@ -16,6 +16,9 @@ const mustContain = [
   ['completion grace window', /completionGraceSeconds/],
   ['persistent event ledger', /processedEvents:\s*\[String:\s*String\]/],
   ['concurrent blocker ledger', /activeInterceptors:\s*\[String:\s*\[String:\s*String\]\]/],
+  ['recoverable interaction ledger', /pendingInteractions:\s*\[String:\s*\[String:\s*String\]\]/],
+  ['interaction result correlation', /record\.tool_call_id/],
+  ['waiting does not terminate run', /emitWaiting\(/],
   ['event replay guard', /processedEvents\[eventID\]\s*==\s*nil/],
   ['stable request identifier', /UNNotificationRequest\(identifier:\s*identifier/],
   ['notification rollback', /processedEvents\.removeValue\(forKey:\s*eventID\)/],
@@ -49,6 +52,8 @@ const mustContain = [
   ['structured activation error log', /recordActivationError\(\s*stage:/]
 ];
 const mustNotContain = [
+  ['waiting marked as permanent terminal', /terminalRuns\[runID\]\s*=\s*"waiting_user"/],
+  ['waiting clears active run', /activeRunIDs\.removeValue\(forKey:\s*watch\.conversationID\)/],
   ['assignment text title inference', /titleFromAssignment|prefix\(28\)/],
   ['assistant text completion inference', /record\.tool_calls\?\.isEmpty/],
   ['DOM observer', /MutationObserver|querySelector|innerText|data-task-status/],

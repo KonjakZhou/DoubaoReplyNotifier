@@ -47,7 +47,7 @@ else
   /usr/bin/plutil -insert CFBundleName -string "Doubao Reply Notifier" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleDisplayName -string "豆包回复通知" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleIdentifier -string "com.local.doubao-reply-notifier" "$CONTENTS/Info.plist"
-  /usr/bin/plutil -insert CFBundleVersion -string "4" "$CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleVersion -string "6" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleShortVersionString -string "$VERSION" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundlePackageType -string "APPL" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleExecutable -string "DoubaoReplyNotifier" "$CONTENTS/Info.plist"

@@ -22,7 +22,7 @@ cat > "$PROFILE/history/agents/m_history/system/assignment.md" <<'EOF'
 历史任务
 EOF
 printf '%s\n' '{"role":"user","content":"历史问题"}' '{"role":"assistant","content":"历史答案"}' > "$PROFILE/history/agents/m_history/system/trajectory.jsonl"
-DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 "$BIN" >/dev/null 2>&1 &
+DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS=3 "$BIN" >/dev/null 2>&1 &
 PID=$!
 sleep 2
 python3 - "$STATE" <<'PY'
@@ -88,11 +88,40 @@ assert len(ids)==2, d
 assert sum('|reply_completed|' in x for x in ids)==1, ids
 assert sum('|waiting_user|' in x for x in ids)==1, ids
 assert all('history|' not in x for x in ids), ids
-assert 'waiting_user' in d.get('terminalRuns',{}).values(), d
+assert 'waiting_user' not in d.get('terminalRuns',{}).values(), d
+assert len(d.get('pendingInteractions',{}).get('90000000000000001',{}))==1, d
 assert d.get('conversationTitle')=='真实对话标题', d
 assert d.get('conversationTitles',{}).get('90000000000000001')=='真实对话标题', d
 assert d.get('conversationTitle')!='后台原生信号测试', d
-print(json.dumps({'processed_events':2,'simple_completion':1,'waiting':1,'false_text_waiting':0,'conversation_title':'真实对话标题'},ensure_ascii=False))
+print(json.dumps({'processed_events':2,'simple_completion':1,'waiting':1,'premature_completion':0,'conversation_title':'真实对话标题'},ensure_ascii=False))
+PY
+
+# 用户完成第一个交互后，下一交互在 grace 窗口内到来，不得提前完成。
+printf '%s\n' '{"role":"tool","content":"用户已完成选择","tool_call_id":"b"}' >> "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
+sleep 1
+printf '%s\n' '{"role":"assistant","content":"请允许一次","tool_calls":[{"id":"c","type":"function","function":{"name":"interaction.authorize_folder","arguments":{}}}]}' >> "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
+sleep 1
+python3 - "$STATE" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); ids=list(d.get('processedEvents',{}))
+assert len(ids)==3, d
+assert sum('|reply_completed|' in x for x in ids)==1, ids
+assert sum('|waiting_user|' in x for x in ids)==2, ids
+assert len(d.get('pendingInteractions',{}).get('90000000000000001',{}))==1, d
+PY
+
+# 用户完成第二个交互后，本轮应恢复并发送最终完成；等待不是永久终态。
+printf '%s\n' '{"role":"tool","content":"用户已授权文件夹权限","tool_call_id":"c"}' >> "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
+sleep 5
+python3 - "$STATE" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); ids=list(d.get('processedEvents',{}))
+assert len(ids)==4, d
+assert sum('|reply_completed|' in x for x in ids)==2, ids
+assert sum('|waiting_user|' in x for x in ids)==2, ids
+assert not d.get('pendingInteractions',{}).get('90000000000000001',{}), d
+assert d.get('lastEventType')=='reply_completed', d
+print(json.dumps({'two_interactions_resumed':True,'waiting_events':2,'final_completion':1,'processed_events':4},ensure_ascii=False))
 PY
 
 # 3. 同一轮多个 blocker 逆序结束，只能完成一次。
@@ -103,16 +132,16 @@ printf '%s\n' "[1:1:0101/000022.000000:INFO:x] [exit_intercept] Unregister block
 sleep 4
 python3 - "$STATE" <<'PY'
 import json,sys
-d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==2, d
+d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==4, d
 PY
 printf '%s\n' "[1:1:0101/000023.000000:INFO:x] [exit_intercept] Unregister blocker. scope_id=local-task-conversation, intercept_id=7__rfh__3:$CONVERSATION_ID, removed_count=1, blocker_count=0" >> "$LOG"
 sleep 5
 python3 - "$STATE" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); ids=list(d.get('processedEvents',{}))
-assert len(ids)==3, d
-assert sum('|reply_completed|' in x for x in ids)==2, ids
-print(json.dumps({'concurrent_blocker_completion':1,'processed_events':3},ensure_ascii=False))
+assert len(ids)==5, d
+assert sum('|reply_completed|' in x for x in ids)==3, ids
+print(json.dumps({'concurrent_blocker_completion':1,'processed_events':5},ensure_ascii=False))
 PY
 
 # 重放同一 unregister 不得重复。
@@ -120,17 +149,17 @@ printf '%s\n' "[1:1:0101/000012.000000:INFO:x] [exit_intercept] Unregister block
 sleep 4
 python3 - "$STATE" <<'PY'
 import json,sys
-d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==3, d
+d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==5, d
 PY
 
 /bin/kill -KILL "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 PID=""
-DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 "$BIN" >/dev/null 2>&1 &
+DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS=3 "$BIN" >/dev/null 2>&1 &
 PID=$!
 sleep 2
 python3 - "$STATE" <<'PY'
 import json,sys
-d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==3, d
-print(json.dumps({'restart_replayed':False,'processed_events':3},ensure_ascii=False))
+d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==5, d
+print(json.dumps({'restart_replayed':False,'processed_events':5},ensure_ascii=False))
 PY
