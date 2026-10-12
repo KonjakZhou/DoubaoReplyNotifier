@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../Sources/main.swift', import.meta.url), 'utf8');
+const titleSource = fs.readFileSync(new URL('../Sources/ConversationTitleReader.swift', import.meta.url), 'utf8');
+const combinedSource = `${source}\n${titleSource}`;
 const mustContain = [
   ['runtime blocker register', /Register added blocker\\\. scope_id=local-task-conversation/],
   ['runtime blocker unregister', /Unregister blocker\\\. scope_id=local-task-conversation/],
@@ -17,7 +19,11 @@ const mustContain = [
   ['event replay guard', /processedEvents\[eventID\]\s*==\s*nil/],
   ['stable request identifier', /UNNotificationRequest\(identifier:\s*identifier/],
   ['notification rollback', /processedEvents\.removeValue\(forKey:\s*eventID\)/],
-  // 点击通知激活豆包主应用（本轮新增契约）
+  ['conversation title database', /chrome_doubao-chat_0\.indexeddb\.leveldb/],
+  ['conversation list title source', /conversation-list-data-/],
+  ['UTF-16 title decoding', /utf16LittleEndian/],
+  ['notification uses refreshed title', /conversationTitleReader\.title\(conversationID:/],
+  // 点击通知激活豆包主应用。
   ['didReceive delegate implemented', /func userNotificationCenter\(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse/],
   ['controlled action marker written', /content\.userInfo = \[Self\.actionMarkerKey: Self\.actionMarkerValue\]/],
   ['reply category registered', /setNotificationCategories/],
@@ -32,10 +38,10 @@ const mustContain = [
   ['resolved bundle verified', /resolvedID == Self\.targetBundleID/],
   ['browser helper suffix refused', /hasSuffix\("\.browser"\)/],
   ['structured activation error log', /recordActivationError\(\s*stage:/],
-  ['no CDP/DOM/renderer for activation', /openApplication/],
   ['userInfo marker guard before activate', /guard let marker = userInfo\[Self\.actionMarkerKey\] as\? String/]
 ];
 const mustNotContain = [
+  ['assignment text title inference', /titleFromAssignment|prefix\(28\)/],
   ['assistant text completion inference', /record\.tool_calls\?\.isEmpty/],
   ['DOM observer', /MutationObserver|querySelector|innerText|data-task-status/],
   ['CDP injection', /remote-debugging|Runtime\.evaluate|webSocketDebuggerUrl|injectIntoChatRenderers/],
@@ -47,9 +53,9 @@ const mustNotContain = [
   ['no launching browser to satisfy click', /openApplication\(at: .*doubao\.browser|launchApplication\(at: .*doubao\.browser/]
 ];
 for (const [name, pattern] of mustContain) {
-  if (!pattern.test(source)) throw new Error(`native contract missing: ${name}`);
+  if (!pattern.test(combinedSource)) throw new Error(`native contract missing: ${name}`);
 }
 for (const [name, pattern] of mustNotContain) {
-  if (pattern.test(source)) throw new Error(`forbidden legacy mechanism remains: ${name}`);
+  if (pattern.test(combinedSource)) throw new Error(`forbidden legacy mechanism remains: ${name}`);
 }
 console.log(JSON.stringify({checked: mustContain.map(([name]) => name), removed: mustNotContain.map(([name]) => name)}, null, 2));

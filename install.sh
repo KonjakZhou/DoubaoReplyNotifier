@@ -40,6 +40,7 @@ else
     -framework UserNotifications \
     -framework CryptoKit \
     -framework ServiceManagement \
+    "$ROOT/Sources/ConversationTitleReader.swift" \
     "$ROOT/Sources/main.swift" -o "$MACOS/DoubaoReplyNotifier"
   /bin/cp "$ROOT/assets/AppIcon.icns" "$RESOURCES/AppIcon.icns"
   /usr/bin/plutil -create xml1 "$CONTENTS/Info.plist"

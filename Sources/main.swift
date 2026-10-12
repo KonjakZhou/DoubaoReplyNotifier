@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var runtimeLogsByPath: [String: URL] = [:]
     private var lastDiscoveryAt = Date.distantPast
     private var pendingCompletions: [String: (runID: String, timer: Timer)] = [:]
+    private let conversationTitleReader = ConversationTitleReader()
     private let maxProcessedEvents = 4000
     private let processedEventTTL: TimeInterval = 7 * 24 * 60 * 60
     private let completionGraceSeconds: TimeInterval = 3.0
@@ -326,14 +327,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func initializeExistingSources() {
         refreshSourcesIfNeeded(force: true)
         var changed = false
+        let discoveredTitles = conversationTitleReader.titles(
+            conversationIDs: Set(watchesByPath.values.map(\.conversationID)),
+            doubaoDataRoot: doubaoDataRoot
+        )
         for watch in watchesByPath.values {
             let key = watch.trajectoryURL.path
             if persistedState.trajectoryOffsets[key] == nil, let size = fileSize(watch.trajectoryURL) {
                 persistedState.trajectoryOffsets[key] = size
                 changed = true
             }
-            if persistedState.conversationTitles[watch.conversationID] == nil {
-                persistedState.conversationTitles[watch.conversationID] = titleFromAssignment(watch.assignmentURL)
+            if let title = discoveredTitles[watch.conversationID],
+               persistedState.conversationTitles[watch.conversationID] != title {
+                persistedState.conversationTitles[watch.conversationID] = title
                 changed = true
             }
         }
@@ -465,7 +471,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             } else {
                 oldOffset = 0
                 persistedState.trajectoryOffsets[path] = 0
-                persistedState.conversationTitles[watch.conversationID] = titleFromAssignment(watch.assignmentURL)
+                if let title = conversationTitleReader.title(conversationID: watch.conversationID, doubaoDataRoot: doubaoDataRoot) {
+                    persistedState.conversationTitles[watch.conversationID] = title
+                }
                 changed = true
             }
             if size < oldOffset {
@@ -479,7 +487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let completeData = data.prefix(through: lastNewline)
             guard let chunk = String(data: completeData, encoding: .utf8) else { continue }
             persistedState.trajectoryOffsets[path] = oldOffset + UInt64(completeData.count)
-            persistedState.conversationTitles[watch.conversationID] = titleFromAssignment(watch.assignmentURL)
+            if let title = conversationTitleReader.title(conversationID: watch.conversationID, doubaoDataRoot: doubaoDataRoot) {
+                persistedState.conversationTitles[watch.conversationID] = title
+            }
             changed = true
             processTrajectory(chunk: chunk, watch: watch)
         }
@@ -506,7 +516,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func emitTerminal(type: String, conversationID: String, runID: String, source: String) {
         let eventID = "\(conversationID)|\(type)|\(sha256(runID))"
         guard persistedState.processedEvents[eventID] == nil else { return }
-        let title = persistedState.conversationTitles[conversationID] ?? "豆包工作"
+        let title: String
+        if let currentTitle = conversationTitleReader.title(conversationID: conversationID, doubaoDataRoot: doubaoDataRoot) {
+            title = currentTitle
+            persistedState.conversationTitles[conversationID] = currentTitle
+        } else {
+            title = persistedState.conversationTitles[conversationID] ?? "豆包工作"
+        }
         let body = type == "waiting_user" ? "等待你确认或提供信息" : "当前对话轮次回复完成"
         persistedState.processedEvents[eventID] = ISO8601DateFormatter().string(from: Date())
         persistedState.terminalRuns[runID] = type
@@ -529,21 +545,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let swiftRange = Range(result.range(at: index), in: line) else { return nil }
             return String(line[swiftRange])
         }
-    }
-
-    private func titleFromAssignment(_ url: URL) -> String? {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        let blocks = text.components(separatedBy: "## [").dropFirst()
-        for block in blocks {
-            let lines = block.split(separator: "\n", omittingEmptySubsequences: true)
-            guard let headerIndex = lines.firstIndex(where: { $0.hasSuffix("] 需求") }) else { continue }
-            for line in lines.dropFirst(headerIndex + 1) {
-                let value = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if value.isEmpty || value.hasPrefix("/") || value.hasPrefix("<") { continue }
-                return String(value.prefix(28))
-            }
-        }
-        return nil
     }
 
     private func fileSize(_ url: URL) -> UInt64? {

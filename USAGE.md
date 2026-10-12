@@ -20,6 +20,7 @@
 - 修复“测试消息”等极简、无工具回复漏通知：回复完成不再依赖主 Agent 是否写入最终 assistant 轨迹。
 - 覆盖当前与后台会话：事件按 conversation ID 归属，不依赖当前打开页面。
 - 消除完成后误报等待：普通正文中的“请确认”“等待你”等文字完全不参与状态判断。
+- 通知标题直接读取豆包会话列表 IndexedDB 中与 conversation ID 对应的真实 `name`，不再使用 assignment 的首条需求摘要。
 - 同一轮多个 blocker 归并为一个运行实例，最后一个 blocker 结束后才通知。
 - 使用持久化事件账本和稳定通知 identifier，重复日志、应用重启不会重复通知。
 - 安装或升级发生在任务运行中时，会从已有日志恢复仍活跃的 blocker，不重放已结束历史。
@@ -72,6 +73,17 @@ interaction.authorize_folder
 ```
 
 等待事件是该运行实例的终态；之后到来的注销日志不会再补发完成通知。
+
+### 通知标题：豆包会话名称
+
+通知标题从各 Profile 的豆包聊天 IndexedDB 中按 conversation ID 读取真实 `name` 字段：
+
+```text
+~/Library/Application Support/Doubao/<Profile>/IndexedDB/
+  chrome_doubao-chat_0.indexeddb.leveldb
+```
+
+每次发送通知前会重新读取最新记录，因此用户重命名对话后，新通知会采用新名称。若标题暂时不可读取，显示“豆包工作”，不会用首条提问或任务摘要冒充会话名称。
 
 ## 已完全移除
 

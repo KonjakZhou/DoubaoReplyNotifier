@@ -7,8 +7,10 @@ trap 'if [[ -n "${PID:-}" ]]; then /bin/kill -KILL "$PID" 2>/dev/null || true; f
 ROOT="$TMP/Doubao"
 STATE="$TMP/state.json"
 LOGROOT="$ROOT/sdk_storage/log"
-PROFILE="$ROOT/Profile 7/.doubao/agent_mode/workspace/.sessions"
-mkdir -p "$LOGROOT" "$PROFILE/history/agents/m_history/system"
+PROFILE_ROOT="$ROOT/Profile 7"
+PROFILE="$PROFILE_ROOT/.doubao/agent_mode/workspace/.sessions"
+TITLE_DB="$PROFILE_ROOT/IndexedDB/chrome_doubao-chat_0.indexeddb.leveldb"
+mkdir -p "$LOGROOT" "$PROFILE/history/agents/m_history/system" "$TITLE_DB"
 LOG="$LOGROOT/saman_test.log"
 : > "$LOG"
 cat > "$PROFILE/history/agents/m_history/system/assignment.md" <<'EOF'
@@ -43,6 +45,23 @@ cat > "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/assignment.md" <<'EOF'
 后台原生信号测试
 EOF
 : > "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
+python3 - "$TITLE_DB/000005.ldb" "$CONVERSATION_ID" <<'PY'
+import sys
+from pathlib import Path
+path=Path(sys.argv[1]); cid=sys.argv[2]
+title='真实对话标题'
+payload=title.encode('utf-16le')
+def varint(n):
+    out=bytearray()
+    while True:
+        b=n & 0x7f; n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n: return bytes(out)
+record=(b'conversation-list-data-overall-v2-c_id'+cid.encode()+
+        b'-type-creator-name'+bytes([0x63])+varint(len(payload))+payload+
+        b'-image_thumb-suffix')
+path.write_bytes(record)
+PY
 sleep 4
 
 # 1. 极简回复：只有主进程 blocker 生命周期，没有 assistant trajectory。
@@ -70,7 +89,10 @@ assert sum('|reply_completed|' in x for x in ids)==1, ids
 assert sum('|waiting_user|' in x for x in ids)==1, ids
 assert all('history|' not in x for x in ids), ids
 assert 'waiting_user' in d.get('terminalRuns',{}).values(), d
-print(json.dumps({'processed_events':2,'simple_completion':1,'waiting':1,'false_text_waiting':0},ensure_ascii=False))
+assert d.get('conversationTitle')=='真实对话标题', d
+assert d.get('conversationTitles',{}).get('90000000000000001')=='真实对话标题', d
+assert d.get('conversationTitle')!='后台原生信号测试', d
+print(json.dumps({'processed_events':2,'simple_completion':1,'waiting':1,'false_text_waiting':0,'conversation_title':'真实对话标题'},ensure_ascii=False))
 PY
 
 # 3. 同一轮多个 blocker 逆序结束，只能完成一次。
