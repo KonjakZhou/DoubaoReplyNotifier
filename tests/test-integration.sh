@@ -163,3 +163,49 @@ import json,sys
 d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==5, d
 print(json.dumps({'restart_replayed':False,'processed_events':5},ensure_ascii=False))
 PY
+
+# 页面导航/展示同步 blocker 不是 Agent 执行，必须完全忽略。
+printf '%s\n' \
+  '[1:1:0101/000030.000000:INFO:x] chat_page_navigate_event conversation_id=90000000000000001' \
+  '[1:1:0101/000030.010000:INFO:x] presentation_sync_requested {"type":"chat-active"}' \
+  "[1:1:0101/000030.020000:INFO:x] [exit_intercept] Register added blocker. scope_id=local-task-conversation, intercept_id=7__sync__1:$CONVERSATION_ID, priority=0, sequence=30, blocker_count=1" \
+  "[1:1:0101/000030.120000:INFO:x] [exit_intercept] Unregister blocker. scope_id=local-task-conversation, intercept_id=7__sync__1:$CONVERSATION_ID, removed_count=1, blocker_count=0" >> "$LOG"
+sleep 5
+python3 - "$STATE" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert len(d.get('processedEvents',{}))==5, d
+assert not d.get('activeRunIDs',{}), d
+PY
+
+# 同一批 waiting call + tool result：先归并结果，不得发送等待。
+printf '%s\n' "[1:1:0101/000040.000000:INFO:x] [exit_intercept] Register added blocker. scope_id=local-task-conversation, intercept_id=7__rfh__batch:$CONVERSATION_ID, priority=0, sequence=40, blocker_count=1" >> "$LOG"
+sleep 1
+printf '%s\n' "[1:1:0101/000041.000000:INFO:x] [exit_intercept] Unregister blocker. scope_id=local-task-conversation, intercept_id=7__rfh__batch:$CONVERSATION_ID, removed_count=1, blocker_count=0" >> "$LOG"
+python3 - "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl" <<'PY'
+from pathlib import Path
+import sys
+with Path(sys.argv[1]).open('a') as f:
+    f.write('{"role":"assistant","content":"请选择","tool_calls":[{"id":"answered-in-batch","type":"function","function":{"name":"interaction.ask","arguments":{}}}]}\n')
+    f.write('{"role":"tool","content":"已选择","tool_call_id":"answered-in-batch"}\n')
+PY
+sleep 5
+python3 - "$STATE" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); ids=list(d.get('processedEvents',{}))
+assert len(ids)==6, d
+assert sum('|reply_completed|' in x for x in ids)==4, ids
+assert sum('|waiting_user|' in x for x in ids)==2, ids
+assert not d.get('pendingInteractions',{}).get('90000000000000001',{}), d
+PY
+
+# run 已完成后，迟到 trajectory 不能补发旧等待。
+printf '%s\n' '{"role":"assistant","content":"迟到交互","tool_calls":[{"id":"late-after-terminal","type":"function","function":{"name":"interaction.ask","arguments":{}}}]}' >> "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
+sleep 3
+python3 - "$STATE" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); ids=list(d.get('processedEvents',{}))
+assert len(ids)==6, d
+assert sum('|waiting_user|' in x for x in ids)==2, ids
+assert not d.get('pendingInteractions',{}).get('90000000000000001',{}), d
+print(json.dumps({'page_sync_false_completion':0,'answered_same_batch_waiting':0,'late_waiting_after_terminal':0,'processed_events':6},ensure_ascii=False))
+PY

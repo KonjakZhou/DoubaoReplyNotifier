@@ -5,14 +5,16 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 7
+    var version = 8
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
     var indexedDBOffsets: [String: UInt64] = [:]
+    var indexedDBKnownInteractions: [String: String] = [:]
     var conversationTitles: [String: String] = [:]
     var activeRunIDs: [String: String] = [:]
     var activeInterceptors: [String: [String: String]] = [:]
+    var awaitingActivityRuns: [String: String] = [:]
     var pendingInteractions: [String: [String: String]] = [:]
     var terminalRuns: [String: String] = [:]
     var lastEventSource = ""
@@ -22,8 +24,8 @@ private struct PersistedNotifierState: Codable {
     var lastEventAt = ""
 
     private enum CodingKeys: String, CodingKey {
-        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, conversationTitles
-        case activeRunIDs, activeInterceptors, pendingInteractions, terminalRuns
+        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, conversationTitles
+        case activeRunIDs, activeInterceptors, awaitingActivityRuns, pendingInteractions, terminalRuns
         case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
     }
 
@@ -32,14 +34,16 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 7
+        version = 8
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
         runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
         indexedDBOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .indexedDBOffsets) ?? [:]
+        indexedDBKnownInteractions = try values.decodeIfPresent([String: String].self, forKey: .indexedDBKnownInteractions) ?? [:]
         conversationTitles = try values.decodeIfPresent([String: String].self, forKey: .conversationTitles) ?? [:]
         activeRunIDs = try values.decodeIfPresent([String: String].self, forKey: .activeRunIDs) ?? [:]
         activeInterceptors = try values.decodeIfPresent([String: [String: String]].self, forKey: .activeInterceptors) ?? [:]
+        awaitingActivityRuns = try values.decodeIfPresent([String: String].self, forKey: .awaitingActivityRuns) ?? [:]
         pendingInteractions = try values.decodeIfPresent([String: [String: String]].self, forKey: .pendingInteractions) ?? [:]
         terminalRuns = try values.decodeIfPresent([String: String].self, forKey: .terminalRuns) ?? [:]
         lastEventSource = try values.decodeIfPresent(String.self, forKey: .lastEventSource) ?? ""
@@ -52,10 +56,12 @@ private struct PersistedNotifierState: Codable {
             runtimeLogOffsets.removeAll()
             activeRunIDs.removeAll()
             activeInterceptors.removeAll()
+            awaitingActivityRuns.removeAll()
             pendingInteractions.removeAll()
         }
-        if sourceVersion < 7 {
+        if sourceVersion < 8 {
             indexedDBOffsets.removeAll()
+            indexedDBKnownInteractions.removeAll()
         }
     }
 }
@@ -87,6 +93,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var runtimeLogsByPath: [String: URL] = [:]
     private var lastDiscoveryAt = Date.distantPast
     private var pendingCompletions: [String: (runID: String, timer: Timer)] = [:]
+    private var recentRuntimeContext: [String] = []
+    private var pageSyncInterceptors = Set<String>()
+    private var sandboxConversations: [String: String] = [:]
+    private let runtimeContextLimit = 24
     private let conversationTitleReader = ConversationTitleReader()
     private let indexedDBInteractionReader = IndexedDBInteractionReader()
     private let maxProcessedEvents = 4000
@@ -144,6 +154,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     )
     private let unregisterRegex = try! NSRegularExpression(
         pattern: #"Unregister blocker\. scope_id=local-task-conversation, intercept_id=([^,\s]+):([0-9]+),"#
+    )
+    private let sandboxConversationRegex = try! NSRegularExpression(
+        pattern: #"\"conversation_id\":\"([0-9]+)\".*?\"sandbox_id\":\"(sandbox-[0-9a-f-]+)\""#
+    )
+    private let nativeWaitingReceivedRegex = try! NSRegularExpression(
+        pattern: #"\"event\":\"toolcall\".*?\"name\":\"(interaction(?:\.|_)(?:ask|request_action|authorize_folder))\".*?\"sandbox_id\":\"(sandbox-[0-9a-f-]+)\".*?\"status\":\"received\".*?\"tcid\":\"([0-9a-f-]{36})\""#
+    )
+    private let nativeWaitingSettledRegex = try! NSRegularExpression(
+        pattern: #"\"event\":\"toolcall\".*?\"phase\":\"execution_settled\".*?\"name\":\"(interaction(?:\.|_)(?:ask|request_action|authorize_folder))\".*?\"sandbox_id\":\"(sandbox-[0-9a-f-]+)\".*?\"tcid\":\"([0-9a-f-]{36})\""#
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -443,6 +462,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .filter { $0.pathExtension.lowercased() == "log" }
         for fileURL in indexedDBLogs {
             if persistedState.indexedDBOffsets[fileURL.path] == nil, let size = fileSize(fileURL) {
+                if let data = readRange(fileURL, offset: 0, length: size) {
+                    for event in IndexedDBInteractionReader.waitingEvents(inWAL: data, agentConversations: Dictionary(uniqueKeysWithValues: watchesByPath.values.map { ($0.agentID, $0.conversationID) })) {
+                        persistedState.indexedDBKnownInteractions["\(event.conversationID)|\(event.interactionID)"] = event.kind
+                    }
+                }
                 persistedState.indexedDBOffsets[fileURL.path] = size
                 changed = true
             }
@@ -497,26 +521,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 changed = true
             }
             if size < oldOffset {
-                persistedState.indexedDBOffsets[path] = size
+                persistedState.indexedDBOffsets[path] = 0
+                persistedState.indexedDBKnownInteractions.removeAll()
                 changed = true
                 continue
             }
             if size == oldOffset { continue }
 
-            let overlap: UInt64 = 16 * 1024
-            let readOffset = oldOffset > overlap ? oldOffset - overlap : 0
+            let readOffset: UInt64 = 0
             guard let data = readRange(fileURL, offset: readOffset, length: size - readOffset) else { continue }
             persistedState.indexedDBOffsets[path] = size
             changed = true
-            for event in IndexedDBInteractionReader.waitingEvents(
-                in: data,
+            let events = IndexedDBInteractionReader.waitingEvents(
+                inWAL: data,
                 agentConversations: agentConversations
-            ) {
+            )
+            for event in events {
+                let key = "\(event.conversationID)|\(event.interactionID)"
+                guard persistedState.indexedDBKnownInteractions[key] == nil else { continue }
+                persistedState.indexedDBKnownInteractions[key] = event.kind
                 registerWaitingInteraction(
                     conversationID: event.conversationID,
                     interactionID: event.interactionID,
-                    waitingTool: "indexeddb.interaction",
-                    source: "indexeddb:interaction"
+                    waitingTool: "indexeddb.\(event.kind)",
+                    source: "indexeddb:\(event.kind)"
                 )
             }
         }
@@ -559,16 +587,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func processRuntimeLogLine(_ line: String, scheduleTerminals: Bool) {
+        if let match = firstMatch(sandboxConversationRegex, line), match.count == 2 {
+            sandboxConversations[match[1]] = match[0]
+        }
+        if scheduleTerminals,
+           let match = firstMatch(nativeWaitingReceivedRegex, line), match.count == 3,
+           let conversationID = sandboxConversations[match[1]] {
+            registerWaitingInteraction(
+                conversationID: conversationID,
+                interactionID: match[2],
+                waitingTool: match[0],
+                source: "runtime:toolcall_received"
+            )
+        }
+        if scheduleTerminals,
+           let match = firstMatch(nativeWaitingSettledRegex, line), match.count == 3,
+           let conversationID = sandboxConversations[match[1]] {
+            resolveWaitingInteraction(conversationID: conversationID, interactionID: match[2])
+        }
+
+        recentRuntimeContext.append(line)
+        if recentRuntimeContext.count > runtimeContextLimit {
+            recentRuntimeContext.removeFirst(recentRuntimeContext.count - runtimeContextLimit)
+        }
+
         if let match = firstMatch(registerRegex, line), match.count == 3 {
             let interceptID = match[0]
             let conversationID = match[1]
             let sequence = match[2]
+            let context = recentRuntimeContext.joined(separator: "\n")
+            let isPageSync = context.contains("chat_page_navigate_event") &&
+                context.contains("presentation_sync_")
+            if isPageSync {
+                pageSyncInterceptors.insert("\(conversationID)|\(interceptID)")
+                recentRuntimeContext.removeAll(keepingCapacity: true)
+                NSLog("PAGE_SYNC_BLOCKER_IGNORED conversation=%@ intercept=%@ sequence=%@", conversationID, interceptID, sequence)
+                return
+            }
+            recentRuntimeContext.removeAll(keepingCapacity: true)
             let runID: String
             if let existingRunID = persistedState.activeRunIDs[conversationID] {
                 runID = existingRunID
             } else {
                 runID = "runtime|\(conversationID)|\(sequence)|\(sha256(line))"
                 persistedState.activeRunIDs[conversationID] = runID
+                persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
                 persistedState.terminalRuns.removeValue(forKey: runID)
             }
             var interceptors = persistedState.activeInterceptors[conversationID] ?? [:]
@@ -580,6 +643,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let match = firstMatch(unregisterRegex, line), match.count == 2 {
             let interceptID = match[0]
             let conversationID = match[1]
+            let pageSyncKey = "\(conversationID)|\(interceptID)"
+            if pageSyncInterceptors.remove(pageSyncKey) != nil { return }
             guard var interceptors = persistedState.activeInterceptors[conversationID],
                   let runID = interceptors.removeValue(forKey: interceptID) else { return }
             persistedState.activeInterceptors[conversationID] = interceptors
@@ -589,6 +654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             } else {
                 persistedState.activeRunIDs.removeValue(forKey: conversationID)
                 persistedState.activeInterceptors.removeValue(forKey: conversationID)
+                persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
             }
         }
     }
@@ -602,10 +668,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                   self.persistedState.activeRunIDs[conversationID] == runID,
                   (self.persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty,
                   (self.persistedState.pendingInteractions[conversationID] ?? [:]).isEmpty,
+                  self.persistedState.awaitingActivityRuns[conversationID] == nil,
                   self.persistedState.terminalRuns[runID] == nil else { return }
             self.pendingCompletions.removeValue(forKey: conversationID)
             self.persistedState.activeRunIDs.removeValue(forKey: conversationID)
             self.persistedState.activeInterceptors.removeValue(forKey: conversationID)
+            self.persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
             self.persistedState.pendingInteractions.removeValue(forKey: conversationID)
             self.emitTerminal(type: "reply_completed", conversationID: conversationID, runID: runID, source: "runtime:exit_intercept")
         }
@@ -649,39 +717,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return changed
     }
 
+    private func indexedDBKind(for waitingTool: String) -> String? {
+        if waitingTool.contains("authorize") { return "authorize" }
+        if waitingTool.contains("ask") { return "ask" }
+        if waitingTool.contains("request_action") { return "request_action" }
+        return nil
+    }
+
     private func processTrajectory(chunk: String, watch: MainAgentWatch) {
+        var calls: [(id: String, tool: String, source: String)] = []
+        var results = Set<String>()
+        var sawAssistantActivity = false
+
         for rawLine in chunk.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(rawLine)
             guard let data = line.data(using: .utf8),
                   let record = try? JSONDecoder().decode(TrajectoryRecord.self, from: data) else { continue }
-
             if record.role == "assistant" {
+                sawAssistantActivity = true
                 for call in record.tool_calls ?? [] {
                     guard let waitingTool = call.function?.name, waitingTools.contains(waitingTool) else { continue }
-                    let interactionID = call.id ?? sha256(line)
-                    registerWaitingInteraction(
-                        conversationID: watch.conversationID,
-                        interactionID: interactionID,
-                        waitingTool: waitingTool,
-                        source: "trajectory:\(waitingTool)"
-                    )
+                    calls.append((call.id ?? sha256(line), waitingTool, "trajectory:\(waitingTool)"))
                 }
-                continue
+            } else if record.role == "tool", let interactionID = record.tool_call_id {
+                results.insert(interactionID)
             }
+        }
 
-            guard record.role == "tool", let interactionID = record.tool_call_id,
-                  var interactions = persistedState.pendingInteractions[watch.conversationID],
-                  interactions.removeValue(forKey: interactionID) != nil else { continue }
-            persistedState.pendingInteractions[watch.conversationID] = interactions
-            guard interactions.isEmpty,
-                  let runID = persistedState.activeRunIDs[watch.conversationID],
-                  (persistedState.activeInterceptors[watch.conversationID] ?? [:]).isEmpty else { continue }
-            scheduleCompletion(
+        if sawAssistantActivity,
+           let runID = persistedState.activeRunIDs[watch.conversationID],
+           persistedState.awaitingActivityRuns[watch.conversationID] == runID {
+            persistedState.awaitingActivityRuns.removeValue(forKey: watch.conversationID)
+        }
+
+        var interactions = persistedState.pendingInteractions[watch.conversationID] ?? [:]
+        for interactionID in results { interactions.removeValue(forKey: interactionID) }
+        for call in calls {
+            guard let kind = indexedDBKind(for: call.tool) else { continue }
+            let matchingIndexedDB = interactions.filter {
+                $0.value == "indexeddb.\(kind)" && $0.key != call.id
+            }.map(\.key)
+            for indexedDBID in matchingIndexedDB { interactions.removeValue(forKey: indexedDBID) }
+            if !matchingIndexedDB.isEmpty, !results.contains(call.id) {
+                interactions[call.id] = call.tool
+            }
+        }
+        persistedState.pendingInteractions[watch.conversationID] = interactions
+
+        for call in calls where !results.contains(call.id) {
+            registerWaitingInteraction(
                 conversationID: watch.conversationID,
-                runID: runID,
-                delay: interactionResumeGraceSeconds
+                interactionID: call.id,
+                waitingTool: call.tool,
+                source: call.source
             )
         }
+
+        interactions = persistedState.pendingInteractions[watch.conversationID] ?? [:]
+        guard interactions.isEmpty,
+              !results.isEmpty,
+              let runID = persistedState.activeRunIDs[watch.conversationID],
+              persistedState.awaitingActivityRuns[watch.conversationID] == nil,
+              (persistedState.activeInterceptors[watch.conversationID] ?? [:]).isEmpty else { return }
+        scheduleCompletion(
+            conversationID: watch.conversationID,
+            runID: runID,
+            delay: interactionResumeGraceSeconds
+        )
+    }
+
+    private func resolveWaitingInteraction(conversationID: String, interactionID: String) {
+        guard var interactions = persistedState.pendingInteractions[conversationID],
+              interactions.removeValue(forKey: interactionID) != nil else { return }
+        persistedState.pendingInteractions[conversationID] = interactions
+        guard interactions.isEmpty,
+              let runID = persistedState.activeRunIDs[conversationID],
+              (persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty else { return }
+        scheduleCompletion(
+            conversationID: conversationID,
+            runID: runID,
+            delay: interactionResumeGraceSeconds
+        )
     }
 
     private func registerWaitingInteraction(
@@ -690,17 +806,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         waitingTool: String,
         source: String
     ) {
+        guard let runID = persistedState.activeRunIDs[conversationID],
+              persistedState.terminalRuns[runID] == nil else {
+            NSLog("STALE_WAITING_IGNORED conversation=%@ interaction=%@ source=%@", conversationID, interactionID, source)
+            return
+        }
+        persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
         var interactions = persistedState.pendingInteractions[conversationID] ?? [:]
+        let kind = indexedDBKind(for: waitingTool)
+        let matchingIndexedDB = kind.map { expected in
+            interactions.filter { $0.value == "indexeddb.\(expected)" && $0.key != interactionID }.map(\.key)
+        } ?? []
+        for indexedDBID in matchingIndexedDB { interactions.removeValue(forKey: indexedDBID) }
         let wasNew = interactions[interactionID] == nil
         if wasNew {
             interactions[interactionID] = waitingTool
             persistedState.pendingInteractions[conversationID] = interactions
             if let pending = pendingCompletions.removeValue(forKey: conversationID) { pending.timer.invalidate() }
-        } else if interactions[interactionID] == "indexeddb.interaction", waitingTool != "indexeddb.interaction" {
+        } else if interactions[interactionID]?.hasPrefix("indexeddb.") == true,
+                  !waitingTool.hasPrefix("indexeddb.") {
             interactions[interactionID] = waitingTool
             persistedState.pendingInteractions[conversationID] = interactions
         }
-        if wasNew {
+        if wasNew && matchingIndexedDB.isEmpty {
             emitWaiting(conversationID: conversationID, interactionID: interactionID, source: source)
         }
     }

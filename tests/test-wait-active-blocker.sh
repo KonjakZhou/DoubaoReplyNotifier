@@ -27,15 +27,15 @@ DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOT
 PID=$!
 sleep 2
 
-# blocker 保持活跃，先出现两个连续交互并分别完成。
+# blocker 保持活跃，两个交互分别进入等待后再完成；不得在 blocker 活跃期间发完成。
 printf '%s\n' "[1:1:0101/000000.000000:INFO:x] [exit_intercept] Register added blocker. scope_id=local-task-conversation, intercept_id=7__rfh__1:$CONVERSATION_ID, priority=0, sequence=1, blocker_count=1" >> "$LOG"
-cat >> "$PROFILE/trajectory.jsonl" <<'EOF'
-{"role":"assistant","content":"请选择","tool_calls":[{"id":"choose","type":"function","function":{"name":"interaction.ask","arguments":{}}}]}
-{"role":"tool","content":"已选择","tool_call_id":"choose"}
-{"role":"assistant","content":"请允许一次","tool_calls":[{"id":"allow","type":"function","function":{"name":"interaction.authorize_folder","arguments":{}}}]}
-{"role":"tool","content":"已允许","tool_call_id":"allow"}
-EOF
-sleep 5
+printf '%s\n' '{"role":"assistant","content":"请选择","tool_calls":[{"id":"choose","type":"function","function":{"name":"interaction.ask","arguments":{}}}]}' >> "$PROFILE/trajectory.jsonl"
+sleep 2
+printf '%s\n' '{"role":"tool","content":"已选择","tool_call_id":"choose"}' >> "$PROFILE/trajectory.jsonl"
+printf '%s\n' '{"role":"assistant","content":"请允许一次","tool_calls":[{"id":"allow","type":"function","function":{"name":"interaction.authorize_folder","arguments":{}}}]}' >> "$PROFILE/trajectory.jsonl"
+sleep 2
+printf '%s\n' '{"role":"tool","content":"已允许","tool_call_id":"allow"}' >> "$PROFILE/trajectory.jsonl"
+sleep 3
 python3 - "$STATE" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); ids=list(d.get('processedEvents',{}))

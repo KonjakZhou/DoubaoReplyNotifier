@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.3.0"
+VERSION="4.4.0"
 APP="$HOME/Applications/Doubao Reply Notifier.app"
 PREBUILT="$ROOT/Doubao Reply Notifier.app"
 CONTENTS="$APP/Contents"
@@ -48,7 +48,7 @@ else
   /usr/bin/plutil -insert CFBundleName -string "Doubao Reply Notifier" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleDisplayName -string "豆包回复通知" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleIdentifier -string "com.local.doubao-reply-notifier" "$CONTENTS/Info.plist"
-  /usr/bin/plutil -insert CFBundleVersion -string "7" "$CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleVersion -string "8" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleShortVersionString -string "$VERSION" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundlePackageType -string "APPL" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleExecutable -string "DoubaoReplyNotifier" "$CONTENTS/Info.plist"
@@ -67,4 +67,4 @@ fi
 printf '%s\n' \
   "安装并启动成功：$APP" \
   "版本：$VERSION" \
-  "监听方式：Saman blocker 完成信号 + IndexedDB/trajectory 双等待信号（不使用 DOM、CDP 或辅助功能）"
+  "监听方式：Saman blocker 完成信号 + 原生 toolcall 等待/解除信号 + IndexedDB/trajectory 对账（不使用 DOM、CDP 或辅助功能）"
