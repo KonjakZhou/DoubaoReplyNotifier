@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../Sources/main.swift', import.meta.url), 'utf8');
+const eventSource = fs.readFileSync(new URL('../Sources/EventArchitecture.swift', import.meta.url), 'utf8');
 const titleSource = fs.readFileSync(new URL('../Sources/ConversationTitleReader.swift', import.meta.url), 'utf8');
 const interactionSource = fs.readFileSync(new URL('../Sources/IndexedDBInteractionReader.swift', import.meta.url), 'utf8');
-const combinedSource = `${source}\n${titleSource}\n${interactionSource}`;
+const combinedSource = `${source}\n${eventSource}\n${titleSource}\n${interactionSource}`;
 const mustContain = [
   ['runtime blocker register', /Register added blocker\\\. scope_id=local-task-conversation/],
   ['runtime blocker unregister', /Unregister blocker\\\. scope_id=local-task-conversation/],
@@ -22,13 +23,20 @@ const mustContain = [
   ['indexeddb cross-source registration', /source: "indexeddb:\\?\(event\.kind\)"/],
   ['indexeddb known interaction baseline', /indexedDBKnownInteractions/],
   ['explicit interaction signal', /interaction\.ask/],
-  ['trajectory batch call collection', /var calls: \[\(id: String, tool: String, source: String\)\]/],
+  ['canonical event model', /struct CanonicalEvent/],
+  ['event resolver', /struct EventResolver/],
+  ['resolver persisted state', /resolverState = EventResolverState\(\)/],
+  ['unmapped native interaction buffer', /pendingNativeInteractions/],
+  ['trajectory canonical call collection', /var calls: \[TrajectoryInteractionCall\]/],
   ['trajectory batch result collection', /var results = Set<String>\(\)/],
-  ['trajectory results before waiting registration', /for interactionID in results/],
+  ['trajectory resolver ingestion', /eventResolver\.ingestTrajectory/],
+  ['single state machine entry', /private func applyCanonicalEvent/],
   ['page sync blocker filter', /PAGE_SYNC_BLOCKER_IGNORED/],
   ['native toolcall received signal', /nativeWaitingReceivedRegex/],
   ['native toolcall settled signal', /nativeWaitingSettledRegex/],
   ['sandbox conversation mapping', /sandboxConversations/],
+  ['provisional conversation migration', /resolver:provisional_migration/],
+  ['unresolved completion hold', /unresolvedCompletionHold/],
   ['late waiting suppression', /STALE_WAITING_IGNORED/],
   ['completion grace window', /completionGraceSeconds/],
   ['persistent event ledger', /processedEvents:\s*\[String:\s*String\]/],
