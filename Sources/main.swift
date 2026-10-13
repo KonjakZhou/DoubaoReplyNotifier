@@ -5,10 +5,11 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 6
+    var version = 7
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
+    var indexedDBOffsets: [String: UInt64] = [:]
     var conversationTitles: [String: String] = [:]
     var activeRunIDs: [String: String] = [:]
     var activeInterceptors: [String: [String: String]] = [:]
@@ -21,7 +22,7 @@ private struct PersistedNotifierState: Codable {
     var lastEventAt = ""
 
     private enum CodingKeys: String, CodingKey {
-        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, conversationTitles
+        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, conversationTitles
         case activeRunIDs, activeInterceptors, pendingInteractions, terminalRuns
         case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
     }
@@ -31,10 +32,11 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 6
+        version = 7
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
         runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
+        indexedDBOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .indexedDBOffsets) ?? [:]
         conversationTitles = try values.decodeIfPresent([String: String].self, forKey: .conversationTitles) ?? [:]
         activeRunIDs = try values.decodeIfPresent([String: String].self, forKey: .activeRunIDs) ?? [:]
         activeInterceptors = try values.decodeIfPresent([String: [String: String]].self, forKey: .activeInterceptors) ?? [:]
@@ -52,6 +54,9 @@ private struct PersistedNotifierState: Codable {
             activeInterceptors.removeAll()
             pendingInteractions.removeAll()
         }
+        if sourceVersion < 7 {
+            indexedDBOffsets.removeAll()
+        }
     }
 }
 
@@ -68,6 +73,7 @@ private struct TrajectoryRecord: Decodable {
 
 private struct MainAgentWatch {
     let conversationID: String
+    let agentID: String
     let trajectoryURL: URL
     let assignmentURL: URL
 }
@@ -82,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var lastDiscoveryAt = Date.distantPast
     private var pendingCompletions: [String: (runID: String, timer: Timer)] = [:]
     private let conversationTitleReader = ConversationTitleReader()
+    private let indexedDBInteractionReader = IndexedDBInteractionReader()
     private let maxProcessedEvents = 4000
     private let processedEventTTL: TimeInterval = 7 * 24 * 60 * 60
     private lazy var completionGraceSeconds: TimeInterval = {
@@ -378,7 +385,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                           FileManager.default.fileExists(atPath: trajectoryURL.path),
                           let assignment = try? String(contentsOf: assignmentURL, encoding: .utf8),
                           assignment.contains("- Role: main") else { continue }
-                    result.append(MainAgentWatch(conversationID: conversationID, trajectoryURL: trajectoryURL, assignmentURL: assignmentURL))
+                    result.append(MainAgentWatch(
+                        conversationID: conversationID,
+                        agentID: agentURL.lastPathComponent,
+                        trajectoryURL: trajectoryURL,
+                        assignmentURL: assignmentURL
+                    ))
                 }
             }
         }
@@ -427,6 +439,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 changed = true
             }
         }
+        let indexedDBLogs = indexedDBInteractionReader.databaseFiles(doubaoDataRoot: doubaoDataRoot)
+            .filter { $0.pathExtension.lowercased() == "log" }
+        for fileURL in indexedDBLogs {
+            if persistedState.indexedDBOffsets[fileURL.path] == nil, let size = fileSize(fileURL) {
+                persistedState.indexedDBOffsets[fileURL.path] = size
+                changed = true
+            }
+        }
+        let liveIndexedDBPaths = Set(indexedDBLogs.map(\.path))
+        persistedState.indexedDBOffsets = persistedState.indexedDBOffsets.filter { liveIndexedDBPaths.contains($0.key) }
         if changed { _ = saveState() }
     }
 
@@ -449,9 +471,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func scanSources() {
         refreshSourcesIfNeeded()
         var changed = scanRuntimeLogs()
+        changed = scanIndexedDBInteractions() || changed
         changed = scanTrajectories() || changed
         if changed { _ = saveState() }
         updateMenu("监听中 · \(watchesByPath.count) 个会话")
+    }
+
+    private func scanIndexedDBInteractions() -> Bool {
+        let agentConversations = Dictionary(uniqueKeysWithValues: watchesByPath.values.map { ($0.agentID, $0.conversationID) })
+        guard !agentConversations.isEmpty else { return false }
+        let files = indexedDBInteractionReader.databaseFiles(doubaoDataRoot: doubaoDataRoot)
+            .filter { $0.pathExtension.lowercased() == "log" }
+        let livePaths = Set(files.map(\.path))
+        var changed = false
+
+        for fileURL in files {
+            let path = fileURL.path
+            guard let size = fileSize(fileURL) else { continue }
+            let oldOffset: UInt64
+            if let saved = persistedState.indexedDBOffsets[path] {
+                oldOffset = saved
+            } else {
+                oldOffset = 0
+                persistedState.indexedDBOffsets[path] = 0
+                changed = true
+            }
+            if size < oldOffset {
+                persistedState.indexedDBOffsets[path] = size
+                changed = true
+                continue
+            }
+            if size == oldOffset { continue }
+
+            let overlap: UInt64 = 16 * 1024
+            let readOffset = oldOffset > overlap ? oldOffset - overlap : 0
+            guard let data = readRange(fileURL, offset: readOffset, length: size - readOffset) else { continue }
+            persistedState.indexedDBOffsets[path] = size
+            changed = true
+            for event in IndexedDBInteractionReader.waitingEvents(
+                in: data,
+                agentConversations: agentConversations
+            ) {
+                registerWaitingInteraction(
+                    conversationID: event.conversationID,
+                    interactionID: event.interactionID,
+                    waitingTool: "indexeddb.interaction",
+                    source: "indexeddb:interaction"
+                )
+            }
+        }
+
+        let previousCount = persistedState.indexedDBOffsets.count
+        persistedState.indexedDBOffsets = persistedState.indexedDBOffsets.filter { livePaths.contains($0.key) }
+        return changed || persistedState.indexedDBOffsets.count != previousCount
     }
 
     private func scanRuntimeLogs() -> Bool {
@@ -587,16 +659,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 for call in record.tool_calls ?? [] {
                     guard let waitingTool = call.function?.name, waitingTools.contains(waitingTool) else { continue }
                     let interactionID = call.id ?? sha256(line)
-                    let waitingEventID = "\(watch.conversationID)|waiting_user|\(sha256(interactionID))"
-                    guard persistedState.processedEvents[waitingEventID] == nil else { continue }
-                    var interactions = persistedState.pendingInteractions[watch.conversationID] ?? [:]
-                    guard interactions[interactionID] == nil else { continue }
-                    interactions[interactionID] = waitingTool
-                    persistedState.pendingInteractions[watch.conversationID] = interactions
-                    if let pending = pendingCompletions.removeValue(forKey: watch.conversationID) { pending.timer.invalidate() }
-                    emitWaiting(
+                    registerWaitingInteraction(
                         conversationID: watch.conversationID,
                         interactionID: interactionID,
+                        waitingTool: waitingTool,
                         source: "trajectory:\(waitingTool)"
                     )
                 }
@@ -615,6 +681,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 runID: runID,
                 delay: interactionResumeGraceSeconds
             )
+        }
+    }
+
+    private func registerWaitingInteraction(
+        conversationID: String,
+        interactionID: String,
+        waitingTool: String,
+        source: String
+    ) {
+        var interactions = persistedState.pendingInteractions[conversationID] ?? [:]
+        let wasNew = interactions[interactionID] == nil
+        if wasNew {
+            interactions[interactionID] = waitingTool
+            persistedState.pendingInteractions[conversationID] = interactions
+            if let pending = pendingCompletions.removeValue(forKey: conversationID) { pending.timer.invalidate() }
+        } else if interactions[interactionID] == "indexeddb.interaction", waitingTool != "indexeddb.interaction" {
+            interactions[interactionID] = waitingTool
+            persistedState.pendingInteractions[conversationID] = interactions
+        }
+        if wasNew {
+            emitWaiting(conversationID: conversationID, interactionID: interactionID, source: source)
         }
     }
 

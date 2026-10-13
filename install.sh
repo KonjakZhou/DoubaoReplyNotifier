@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.2.0"
+VERSION="4.3.0"
 APP="$HOME/Applications/Doubao Reply Notifier.app"
 PREBUILT="$ROOT/Doubao Reply Notifier.app"
 CONTENTS="$APP/Contents"
@@ -41,13 +41,14 @@ else
     -framework CryptoKit \
     -framework ServiceManagement \
     "$ROOT/Sources/ConversationTitleReader.swift" \
+    "$ROOT/Sources/IndexedDBInteractionReader.swift" \
     "$ROOT/Sources/main.swift" -o "$MACOS/DoubaoReplyNotifier"
   /bin/cp "$ROOT/assets/AppIcon.icns" "$RESOURCES/AppIcon.icns"
   /usr/bin/plutil -create xml1 "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleName -string "Doubao Reply Notifier" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleDisplayName -string "豆包回复通知" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleIdentifier -string "com.local.doubao-reply-notifier" "$CONTENTS/Info.plist"
-  /usr/bin/plutil -insert CFBundleVersion -string "6" "$CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleVersion -string "7" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleShortVersionString -string "$VERSION" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundlePackageType -string "APPL" "$CONTENTS/Info.plist"
   /usr/bin/plutil -insert CFBundleExecutable -string "DoubaoReplyNotifier" "$CONTENTS/Info.plist"
@@ -66,4 +67,4 @@ fi
 printf '%s\n' \
   "安装并启动成功：$APP" \
   "版本：$VERSION" \
-  "监听方式：豆包主进程任务 blocker + 主 Agent 明确交互事件（不使用 DOM、CDP 或辅助功能）"
+  "监听方式：Saman blocker 完成信号 + IndexedDB/trajectory 双等待信号（不使用 DOM、CDP 或辅助功能）"

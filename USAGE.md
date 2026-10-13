@@ -1,6 +1,16 @@
-# 豆包工作原生任务通知器 4.2
+# 豆包工作原生任务通知器 4.3
 
 这是一个独立的 macOS 菜单栏应用。它直接监听豆包工作在本机写入的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。
+
+## 4.3 修复内容
+
+### 待办通知即时发现
+
+- 新增豆包聊天 IndexedDB WAL 增量监听：界面生成 `interaction_ask/clarify` 交互块时即可发现，不再等待主 Agent `trajectory.jsonl` 延迟落盘。
+- IndexedDB 负责即时发现，trajectory 继续负责精确工具类型与 `tool_call_id` 结果关联；两个来源按 interaction ID 共享同一幂等事件。
+- 启动时对已有 WAL 建立字节偏移基线，不重放历史待办；运行中只读取新增字节，并用 16 KB 重叠窗口处理跨写入边界记录。
+- WAL 文件轮转后自动发现新文件，不写死文件名；按交互记录内的主 Agent ID 映射 conversation ID，避免后台会话串联。
+- 进程级回归中，trajectory 完全为空时仅靠 IndexedDB 在 614 ms 内产生等待事件；之后延迟写入同一 trajectory 信号，重复通知数为 0。
 
 ## 4.2 修复内容
 
@@ -69,9 +79,18 @@ Unregister blocker       → blocker 结束
 当前对话轮次回复完成
 ```
 
-### 等待用户：主 Agent 明确交互工具
+### 等待用户：IndexedDB 即时信号 + trajectory 精确关联
 
-通知器同时增量监听所有 Profile 下的主 Agent 轨迹：
+通知器首先增量监听各 Profile 的聊天 IndexedDB WAL（`.log`）：
+
+```text
+~/Library/Application Support/Doubao/<Profile>/IndexedDB/
+  chrome_doubao-chat_0.indexeddb.leveldb/*.log
+```
+
+当写入 `interaction_ask/clarify` 交互块时，按交互 ID 立即登记等待状态并发送通知，不依赖 trajectory 的落盘时机。首次启动对现有 WAL 建立偏移基线，文件轮转时自动跟踪新 WAL。
+
+通知器同时增量监听所有 Profile 下的主 Agent 轨迹，用于确认精确交互工具并关联工具结果：
 
 ```text
 ~/Library/Application Support/Doubao/<Profile>/.doubao/
@@ -118,7 +137,7 @@ interaction.authorize_folder
 
 ## 安装
 
-1. 解压 `DoubaoReplyNotifier-4.2.0.zip`。
+1. 解压 `DoubaoReplyNotifier-4.3.0.zip`。
 2. 双击 `Install.command`。
 3. 首次运行时允许“豆包回复通知”发送通知。
 
@@ -135,7 +154,7 @@ interaction.authorize_folder
 ## 隐私
 
 - 运行日志只解析 blocker 类型、conversation ID、序号和生命周期，不读取回复正文。
-- Agent 轨迹只解析角色和交互工具名称，不把回答正文写入状态文件。
+- Agent 轨迹只解析角色、交互工具名称和调用 ID；IndexedDB WAL 只解析交互结构、interaction ID 与主 Agent ID，不读取或保存待办正文。
 - 不读取 Cookie、令牌或网络请求。
 - 所有数据仅在本机处理。
 
@@ -147,10 +166,10 @@ interaction.authorize_folder
 ~/Library/Application Support/DoubaoReplyNotifier/state.json
 ```
 
-- 日志与轨迹按字节偏移增量读取。
+- 运行日志、轨迹与 IndexedDB WAL 按字节偏移增量读取。
 - 完成事件绑定完整 Register 日志哈希，豆包重启后 sequence 复用不会误去重。
 - 最近 7 天、最多 4000 个事件用于持久化幂等。
-- 升级到 4.2 后会迁移状态账本，重新建立活跃运行与交互等待状态，同时不重放历史终态。
+- 升级到 4.3 后会迁移状态账本，建立 IndexedDB WAL 偏移基线并保留活跃运行与交互等待状态，不重放历史待办或终态。
 - 首次安装不重放历史终态，但会恢复日志末尾仍未结束的 blocker。
 
 ## 覆盖范围与限制
@@ -170,6 +189,8 @@ node tests/test-trajectory.mjs
 node tests/test-activation-router.mjs
 node tests/test-native-contract.mjs
 swiftc tests/test-marker-bridging.swift -o /tmp/test-marker-bridging && /tmp/test-marker-bridging
+swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swift -o /tmp/test-indexeddb-reader && /tmp/test-indexeddb-reader
+bash tests/test-indexeddb-latency.sh "Doubao Reply Notifier.app/Contents/MacOS/DoubaoReplyNotifier"
 bash -n install.sh
 bash tests/test-integration.sh "Doubao Reply Notifier.app/Contents/MacOS/DoubaoReplyNotifier"
 ```

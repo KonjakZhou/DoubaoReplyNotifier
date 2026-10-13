@@ -2,7 +2,8 @@ import fs from 'node:fs';
 
 const source = fs.readFileSync(new URL('../Sources/main.swift', import.meta.url), 'utf8');
 const titleSource = fs.readFileSync(new URL('../Sources/ConversationTitleReader.swift', import.meta.url), 'utf8');
-const combinedSource = `${source}\n${titleSource}`;
+const interactionSource = fs.readFileSync(new URL('../Sources/IndexedDBInteractionReader.swift', import.meta.url), 'utf8');
+const combinedSource = `${source}\n${titleSource}\n${interactionSource}`;
 const mustContain = [
   ['runtime blocker register', /Register added blocker\\\. scope_id=local-task-conversation/],
   ['runtime blocker unregister', /Unregister blocker\\\. scope_id=local-task-conversation/],
@@ -12,6 +13,10 @@ const mustContain = [
   ['multi-profile discovery', /name == "Default" \|\| name\.hasPrefix\("Profile "\)/],
   ['runtime offsets', /runtimeLogOffsets:\s*\[String:\s*UInt64\]/],
   ['trajectory offsets', /trajectoryOffsets:\s*\[String:\s*UInt64\]/],
+  ['indexeddb WAL offsets', /indexedDBOffsets:\s*\[String:\s*UInt64\]/],
+  ['indexeddb interaction reader', /IndexedDBInteractionReader/],
+  ['indexeddb interaction signature', /dbx_ic/],
+  ['indexeddb cross-source registration', /source: "indexeddb:interaction"/],
   ['explicit interaction signal', /interaction\.ask/],
   ['completion grace window', /completionGraceSeconds/],
   ['persistent event ledger', /processedEvents:\s*\[String:\s*String\]/],
