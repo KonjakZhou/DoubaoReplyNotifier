@@ -1,6 +1,10 @@
-# 豆包工作原生任务通知器 4.5
+# 豆包工作原生任务通知器 4.5.1
 
 这是一个独立的 macOS 菜单栏应用。它监听豆包工作写入本机的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver、辅助功能树或页面按钮 / 文案 /loading 推断。
+
+## 4.5.1 等待通知修复
+
+当页面切换产生的短暂同步边界被忽略后，如果随后出现一个已经明确归属到对话的实时用户操作请求，该请求现在会自行建立本轮等待状态并立即通知用户。相同请求重复到达时不会重复提醒；请求结束后仍只发送一次完成通知。历史记录中的迟到请求不会自行建立新轮次。
 
 ## 4.5 架构重构
 
@@ -192,6 +196,7 @@ swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/t
 bash tests/test-native-toolcall.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-inflight-recovery.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-wait-active-blocker.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
+bash tests/test-wait-without-active-run.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-unmapped-native.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-integration.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 ```

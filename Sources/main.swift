@@ -865,8 +865,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         waitingTool: String,
         source: String
     ) {
-        guard let runID = persistedState.activeRunIDs[conversationID],
-              persistedState.terminalRuns[runID] == nil else {
+        let eventID = "\(conversationID)|waiting_user|\(sha256(interactionID))"
+        if persistedState.processedEvents[eventID] != nil { return }
+
+        let runID: String
+        if let activeRunID = persistedState.activeRunIDs[conversationID],
+           persistedState.terminalRuns[activeRunID] == nil {
+            runID = activeRunID
+        } else if source.hasPrefix("runtime:") || source.hasPrefix("resolver:") {
+            runID = "interaction|\(conversationID)|\(sha256(interactionID))"
+            persistedState.activeRunIDs[conversationID] = runID
+            persistedState.activeInterceptors[conversationID] = [:]
+            persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
+            persistedState.terminalRuns.removeValue(forKey: runID)
+            NSLog("INTERACTION_RUN_CREATED conversation=%@ interaction=%@ source=%@", conversationID, interactionID, source)
+        } else {
             NSLog("STALE_WAITING_IGNORED conversation=%@ interaction=%@ source=%@", conversationID, interactionID, source)
             return
         }

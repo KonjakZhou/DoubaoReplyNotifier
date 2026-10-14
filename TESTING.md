@@ -79,6 +79,7 @@ swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swif
 bash tests/test-native-toolcall.sh "<binary>"
 bash tests/test-inflight-recovery.sh "<binary>"
 bash tests/test-wait-active-blocker.sh "<binary>"
+bash tests/test-wait-without-active-run.sh "<binary>"
 bash tests/test-unmapped-native.sh "<binary>"
 bash tests/test-integration.sh "<binary>"
 ```
@@ -89,6 +90,7 @@ bash tests/test-integration.sh "<binary>"
 - 后台会话显式 sandbox 映射。
 - 运行中升级恢复与历史不重放。
 - blocker 活跃期间禁止完成。
+- 页面同步边界被忽略后，明确归属的实时等待仍可建立轮次并通知。
 - 连续 interaction、并发 blocker。
 - 页面同步 blocker 过滤。
 - 同批 call/result 和 run 终态后的迟到 waiting。
@@ -98,7 +100,7 @@ bash tests/test-integration.sh "<binary>"
 
 1. 使用 `install.sh` 从源码编译临时签名 App。
 2. 只有编译和签名校验成功后才停止旧版本并替换安装目录。
-3. 校验版本为 4.5.0、build 9。
+3. 校验版本为 4.5.1、build 10。
 4. 校验进程唯一运行。
 5. 校验旧 v8 状态自动解码并迁移为 v9。
 6. 校验安装二进制哈希与本次构建产物一致。

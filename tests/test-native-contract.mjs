@@ -31,6 +31,7 @@ const mustContain = [
   ['trajectory batch result collection', /var results = Set<String>\(\)/],
   ['trajectory resolver ingestion', /eventResolver\.ingestTrajectory/],
   ['single state machine entry', /private func applyCanonicalEvent/],
+  ['runtime waiting may establish run', /INTERACTION_RUN_CREATED/],
   ['page sync blocker filter', /PAGE_SYNC_BLOCKER_IGNORED/],
   ['native toolcall received signal', /nativeWaitingReceivedRegex/],
   ['native toolcall settled signal', /nativeWaitingSettledRegex/],
