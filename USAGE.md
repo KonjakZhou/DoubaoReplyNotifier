@@ -1,6 +1,16 @@
-# 豆包工作原生任务通知器 4.5.1
+# 豆包工作原生任务通知器 4.6.0
 
-这是一个独立的 macOS 菜单栏应用。它监听豆包工作写入本机的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver、辅助功能树或页面按钮 / 文案 /loading 推断。
+这是一个独立的 macOS 菜单栏应用。它监听豆包工作写入本机的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver 或辅助功能树；权限审阅通过豆包工作原生日志中的审阅页面生命周期识别，不操作页面。
+
+## 4.6 权限审阅通知修复
+
+当豆包工作显示“拒绝 / 允许一次”的本地工具执行审阅时，通知器现在会在审阅界面出现时立即建立等待状态并发送通知，不再等待用户允许后才可能写入的 IndexedDB 授权记录。
+
+* 同一次审阅的两个操作按钮合并为一个事件；
+* 页面重绘和通知器重启不会重复提醒；
+* 工具获准开始、用户拒绝后 Agent 恢复，或后续 Agent 活动会解除等待；
+* 已处理审阅对应的迟到 IndexedDB 授权记录只用于关联，不再二次通知；
+* 普通页面导航、聊天文本和权限模式诊断不会触发审阅通知。
 
 ## 4.5.1 等待通知修复
 
@@ -8,7 +18,7 @@
 
 ## 4.5 架构重构
 
-Saman blocker、Saman toolcall、trajectory 和 IndexedDB WAL 现在分别作为数据源适配器，统一生成 `CanonicalEvent`。所有运行、等待、恢复和完成状态只通过一个会话状态机入口处理。
+Saman 权限审阅、blocker、toolcall、trajectory 和 IndexedDB WAL 现在分别作为数据源适配器，统一生成 `CanonicalEvent`。所有运行、等待、恢复和完成状态只通过一个会话状态机入口处理。
 
 新增 `EventResolver` 负责 `sandbox_id`、`tcid/tool_call_id` 与 `conversation_id` 的归属：
 
@@ -164,7 +174,7 @@ Unregister blocker       → blocker 结束
 
 
 
-* 状态格式版本 9；新增持久化 Resolver 状态和已结束 interaction 的短期 tombstone。
+* 状态格式版本 10；新增权限审阅与后续工具调用的短期关联记录，并继续持久化 Resolver 状态和已结束 interaction tombstone。
 
 * 运行日志、trajectory 与 WAL 使用持久化偏移。
 
@@ -192,7 +202,9 @@ swiftc tests/test-marker-bridging.swift -o /tmp/test-marker-bridging && /tmp/tes
 swiftc Sources/ConversationTitleReader.swift tests/test-title-reader.swift -o /tmp/test-title-reader && /tmp/test-title-reader
 swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swift -o /tmp/test-indexeddb-reader
 /tmp/test-indexeddb-reader tests/fixtures/real-authorize-wal.bin
+swiftc Sources/PermissionReviewSource.swift tests/test-permission-review-source.swift -o /tmp/test-permission-review-source && /tmp/test-permission-review-source
 swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/test-event-resolver && /tmp/test-event-resolver
+bash tests/test-permission-review.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-native-toolcall.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-inflight-recovery.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-wait-active-blocker.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
@@ -201,7 +213,7 @@ bash tests/test-unmapped-native.sh "<签名 App 内的 DoubaoReplyNotifier 二�
 bash tests/test-integration.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 ```
 
-完整方案见 `TESTING.md`。集成测试覆盖：统一事件模型、12 类 Resolver 时序、新 sandbox 无映射、三类原生交互即时进入 / 解除、后台会话映射、真实 WAL 授权结构、页面同步误完成、同批 call/result、完成后的迟到 waiting、连续交互、blocker 活跃、并发 blocker、运行中升级恢复、重启和历史不重放。
+完整方案见 `TESTING.md`。集成测试覆盖：统一事件模型、权限审阅双按钮合并与重启恢复、12 类 Resolver 时序、新 sandbox 无映射、三类原生交互即时进入 / 解除、后台会话映射、真实 WAL 授权结构、页面同步误完成、同批 call/result、完成后的迟到 waiting、连续交互、blocker 活跃、并发 blocker、运行中升级恢复、重启和历史不重放。
 
 ## 卸载
 

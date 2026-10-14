@@ -4,7 +4,8 @@ const source = fs.readFileSync(new URL('../Sources/main.swift', import.meta.url)
 const eventSource = fs.readFileSync(new URL('../Sources/EventArchitecture.swift', import.meta.url), 'utf8');
 const titleSource = fs.readFileSync(new URL('../Sources/ConversationTitleReader.swift', import.meta.url), 'utf8');
 const interactionSource = fs.readFileSync(new URL('../Sources/IndexedDBInteractionReader.swift', import.meta.url), 'utf8');
-const combinedSource = `${source}\n${eventSource}\n${titleSource}\n${interactionSource}`;
+const permissionReviewSource = fs.readFileSync(new URL('../Sources/PermissionReviewSource.swift', import.meta.url), 'utf8');
+const combinedSource = `${source}\n${eventSource}\n${titleSource}\n${interactionSource}\n${permissionReviewSource}`;
 const mustContain = [
   ['runtime blocker register', /Register added blocker\\\. scope_id=local-task-conversation/],
   ['runtime blocker unregister', /Unregister blocker\\\. scope_id=local-task-conversation/],
@@ -32,6 +33,11 @@ const mustContain = [
   ['trajectory resolver ingestion', /eventResolver\.ingestTrajectory/],
   ['single state machine entry', /private func applyCanonicalEvent/],
   ['runtime waiting may establish run', /INTERACTION_RUN_CREATED/],
+  ['permission review source', /struct PermissionReviewSource/],
+  ['permission review UI signal', /common-ask-human-action-button-/],
+  ['permission review presented event', /runtime:permission_review_presented/],
+  ['permission review resolution', /resolvePermissionReviews/],
+  ['permission review tool tombstone', /permissionReviewToolIDs/],
   ['page sync blocker filter', /PAGE_SYNC_BLOCKER_IGNORED/],
   ['native toolcall received signal', /nativeWaitingReceivedRegex/],
   ['native toolcall settled signal', /nativeWaitingSettledRegex/],

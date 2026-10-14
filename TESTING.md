@@ -1,4 +1,4 @@
-# 架构重构测试方案（v4.5）
+# 架构重构测试方案（v4.6）
 
 ## 目标
 
@@ -16,7 +16,8 @@ node tests/test-native-contract.mjs
 
 检查项：
 
-- 四类数据源仍存在：Saman blocker、Saman toolcall、trajectory、IndexedDB WAL。
+- 四类原有数据源仍存在：Saman blocker、Saman toolcall、trajectory、IndexedDB WAL。
+- 权限审阅 UI 作为独立实时来源，产生统一 `CanonicalEvent`。
 - 所有来源统一生成 `CanonicalEvent`。
 - 所有业务状态变更只经过 `applyCanonicalEvent`。
 - Resolver 状态被持久化。
@@ -47,7 +48,26 @@ swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/t
 11. `settled` 早于 `received` 时，用短期 tombstone 抑制迟到的陈旧等待。
 12. 多活跃 run 时不猜测归属，只对事发时的候选会话施加短期完成门禁。
 
-### 3. 真实进程回放
+### 3. 权限审阅实时回放
+
+命令：
+
+```bash
+swiftc Sources/PermissionReviewSource.swift tests/test-permission-review-source.swift -o /tmp/test-permission-review-source
+/tmp/test-permission-review-source
+bash tests/test-permission-review.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
+```
+
+覆盖：
+
+1. “拒绝 / 允许一次”两个按钮合并为一个审阅。
+2. 审阅显示后立即通知，不依赖工具已经执行。
+3. 通知器重启保留等待且不重放通知。
+4. 实际工具开始后解除等待并记录短期关联。
+5. 审阅 UI 重绘不重复通知。
+6. 普通导航及权限模式诊断不产生误报。
+
+### 4. 真实进程回放
 
 命令：
 
@@ -64,7 +84,7 @@ bash tests/test-unmapped-native.sh "<签名 App 内的 DoubaoReplyNotifier 二�
 5. 写入相同 `tcid` 的 `execution_settled`，仍不提供映射。
 6. 断言等待解除、完成通知恰好发送一次、状态升级为 v9。
 
-### 4. 旧行为回归
+### 5. 旧行为回归
 
 必须全部运行：
 
@@ -76,6 +96,9 @@ swiftc tests/test-marker-bridging.swift -o /tmp/test-marker-bridging && /tmp/tes
 swiftc Sources/ConversationTitleReader.swift tests/test-title-reader.swift -o /tmp/test-title-reader && /tmp/test-title-reader
 swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swift -o /tmp/test-indexeddb-reader
 /tmp/test-indexeddb-reader tests/fixtures/real-authorize-wal.bin
+swiftc Sources/PermissionReviewSource.swift tests/test-permission-review-source.swift -o /tmp/test-permission-review-source && /tmp/test-permission-review-source
+swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/test-event-resolver && /tmp/test-event-resolver
+bash tests/test-permission-review.sh "<binary>"
 bash tests/test-native-toolcall.sh "<binary>"
 bash tests/test-inflight-recovery.sh "<binary>"
 bash tests/test-wait-active-blocker.sh "<binary>"
@@ -100,7 +123,7 @@ bash tests/test-integration.sh "<binary>"
 
 1. 使用 `install.sh` 从源码编译临时签名 App。
 2. 只有编译和签名校验成功后才停止旧版本并替换安装目录。
-3. 校验版本为 4.5.1、build 10。
+3. 校验版本为 4.6.0、build 11。
 4. 校验进程唯一运行。
 5. 校验旧 v8 状态自动解码并迁移为 v9。
 6. 校验安装二进制哈希与本次构建产物一致。
@@ -109,6 +132,7 @@ bash tests/test-integration.sh "<binary>"
 
 - 全部命令退出码为 0。
 - Resolver 单测 12/12 通过。
+- 权限审阅解析与进程回放通过：双按钮 1 次、重启 0 重放、工具启动后解除、重绘 0 重复。
 - 无映射真实回放中：等待 1 次、提前完成 0 次、settled 后完成 1 次。
 - 旧回归测试全部保持通过。
 - 没有新增 Swift 编译警告。

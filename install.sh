@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.5.1"
-BUILD="10"
+VERSION="4.6.0"
+BUILD="11"
 APP="$HOME/Applications/Doubao Reply Notifier.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -50,6 +50,7 @@ fi
   -framework CryptoKit \
   -framework ServiceManagement \
   "$ROOT/Sources/EventArchitecture.swift" \
+  "$ROOT/Sources/PermissionReviewSource.swift" \
   "$ROOT/Sources/ConversationTitleReader.swift" \
   "$ROOT/Sources/IndexedDBInteractionReader.swift" \
   "$ROOT/Sources/main.swift" -o "$STAGED_MACOS/DoubaoReplyNotifier"
@@ -89,4 +90,4 @@ printf '%s\n' \
   "安装成功：$APP" \
   "版本：${VERSION}（build ${BUILD}）" \
   "架构：$(/usr/bin/file "$MACOS/DoubaoReplyNotifier" | /usr/bin/sed 's/.*: //')" \
-  "监听方式：统一事件模型 + Resolver + 会话状态机（Saman / trajectory / IndexedDB）"
+  "监听方式：统一事件模型 + Resolver + 会话状态机（Saman 审阅/Toolcall/Blocker + trajectory + IndexedDB）"

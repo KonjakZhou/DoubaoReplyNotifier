@@ -5,12 +5,13 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 9
+    var version = 10
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
     var indexedDBOffsets: [String: UInt64] = [:]
     var indexedDBKnownInteractions: [String: String] = [:]
+    var permissionReviewToolIDs: [String: TimeInterval] = [:]
     var conversationTitles: [String: String] = [:]
     var activeRunIDs: [String: String] = [:]
     var activeInterceptors: [String: [String: String]] = [:]
@@ -25,7 +26,7 @@ private struct PersistedNotifierState: Codable {
     var lastEventAt = ""
 
     private enum CodingKeys: String, CodingKey {
-        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, conversationTitles
+        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, permissionReviewToolIDs, conversationTitles
         case activeRunIDs, activeInterceptors, awaitingActivityRuns, pendingInteractions, terminalRuns, resolverState
         case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
     }
@@ -35,12 +36,13 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 9
+        version = 10
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
         runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
         indexedDBOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .indexedDBOffsets) ?? [:]
         indexedDBKnownInteractions = try values.decodeIfPresent([String: String].self, forKey: .indexedDBKnownInteractions) ?? [:]
+        permissionReviewToolIDs = try values.decodeIfPresent([String: TimeInterval].self, forKey: .permissionReviewToolIDs) ?? [:]
         conversationTitles = try values.decodeIfPresent([String: String].self, forKey: .conversationTitles) ?? [:]
         activeRunIDs = try values.decodeIfPresent([String: String].self, forKey: .activeRunIDs) ?? [:]
         activeInterceptors = try values.decodeIfPresent([String: [String: String]].self, forKey: .activeInterceptors) ?? [:]
@@ -64,6 +66,12 @@ private struct PersistedNotifierState: Codable {
         if sourceVersion < 8 {
             indexedDBOffsets.removeAll()
             indexedDBKnownInteractions.removeAll()
+        }
+        if sourceVersion < 10 {
+            pendingInteractions = pendingInteractions.mapValues { interactions in
+                interactions.filter { $0.value != "indexeddb.authorize" }
+            }.filter { !$0.value.isEmpty }
+            permissionReviewToolIDs.removeAll()
         }
     }
 }
@@ -103,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let indexedDBInteractionReader = IndexedDBInteractionReader()
     private let maxProcessedEvents = 4000
     private let processedEventTTL: TimeInterval = 7 * 24 * 60 * 60
+    private let permissionReviewToolTTL: TimeInterval = 10 * 60
     private let unresolvedCompletionHold: TimeInterval = 5.0
     private lazy var completionGraceSeconds: TimeInterval = {
         Double(environment["DOUBAO_NOTIFIER_COMPLETION_GRACE_SECONDS"] ?? "") ?? 3.0
@@ -543,10 +552,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 agentConversations: agentConversations
             )
             for event in events {
-                let key = "\(event.conversationID)|\(event.interactionID)"
-                guard persistedState.indexedDBKnownInteractions[key] == nil else { continue }
-                persistedState.indexedDBKnownInteractions[key] = event.kind
-                applyCanonicalEvent(CanonicalEvent(
+            let key = "\(event.conversationID)|\(event.interactionID)"
+            guard persistedState.indexedDBKnownInteractions[key] == nil else { continue }
+            persistedState.indexedDBKnownInteractions[key] = event.kind
+            if event.kind == "authorize" {
+                let toolKey = "\(event.conversationID)|\(event.interactionID)"
+                if persistedState.permissionReviewToolIDs[toolKey] != nil {
+                    NSLog("INDEXEDDB_AUTHORIZE_AFTER_PERMISSION_REVIEW conversation=%@ interaction=%@", event.conversationID, event.interactionID)
+                    continue
+                }
+            }
+            applyCanonicalEvent(CanonicalEvent(
                     kind: .interactionWaiting,
                     conversationID: event.conversationID,
                     source: "indexeddb:\(event.kind)",
@@ -601,6 +617,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 source: "resolver:runtime_mapping"
             )
             for event in events { applyCanonicalEvent(event) }
+        }
+        if scheduleTerminals,
+           let review = PermissionReviewSource.reviewPresented(in: line) {
+            applyCanonicalEvent(CanonicalEvent(
+                kind: .interactionWaiting,
+                conversationID: review.conversationID,
+                source: "runtime:permission_review_presented",
+                interactionID: review.reviewID,
+                waitingTool: "permission_review.authorize"
+            ))
+        }
+        if scheduleTerminals,
+           let toolStarted = PermissionReviewSource.toolStarted(in: line) {
+            resolvePermissionReviews(conversationID: toolStarted.conversationID)
+            persistedState.permissionReviewToolIDs["\(toolStarted.conversationID)|\(toolStarted.toolCallID)"] = Date().timeIntervalSince1970
         }
         if scheduleTerminals,
            let match = firstMatch(nativeWaitingReceivedRegex, line), match.count == 3 {
@@ -832,6 +863,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         for event in events { applyCanonicalEvent(event) }
 
+        if sawAssistantActivity {
+            resolvePermissionReviews(conversationID: watch.conversationID)
+        }
         let interactions = persistedState.pendingInteractions[watch.conversationID] ?? [:]
         guard interactions.isEmpty,
               !results.isEmpty,
@@ -843,6 +877,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             runID: runID,
             delay: interactionResumeGraceSeconds
         )
+    }
+
+    private func resolvePermissionReviews(conversationID: String) {
+        guard var interactions = persistedState.pendingInteractions[conversationID] else { return }
+        let reviewIDs = interactions.filter { $0.value.hasPrefix("permission_review.") }.map(\.key)
+        guard !reviewIDs.isEmpty else { return }
+        for reviewID in reviewIDs { interactions.removeValue(forKey: reviewID) }
+        persistedState.pendingInteractions[conversationID] = interactions
+        NSLog("PERMISSION_REVIEWS_RESOLVED conversation=%@ count=%d", conversationID, reviewIDs.count)
     }
 
     private func resolveWaitingInteraction(conversationID: String, interactionID: String) {
@@ -868,6 +911,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let eventID = "\(conversationID)|waiting_user|\(sha256(interactionID))"
         if persistedState.processedEvents[eventID] != nil { return }
 
+        let isPermissionReview = waitingTool.hasPrefix("permission_review.")
+        if isPermissionReview,
+           (persistedState.pendingInteractions[conversationID] ?? [:]).values.contains(where: { $0.hasPrefix("permission_review.") }) {
+            return
+        }
+
         let runID: String
         if let activeRunID = persistedState.activeRunIDs[conversationID],
            persistedState.terminalRuns[activeRunID] == nil {
@@ -885,6 +934,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
         var interactions = persistedState.pendingInteractions[conversationID] ?? [:]
+        if isPermissionReview {
+            let lateAuthorizeIDs = interactions.filter { $0.value == "indexeddb.authorize" }.map(\.key)
+            for authorizeID in lateAuthorizeIDs { interactions.removeValue(forKey: authorizeID) }
+        }
         let kind = indexedDBKind(for: waitingTool)
         let matchingIndexedDB = kind.map { expected in
             interactions.filter { $0.value == "indexeddb.\(expected)" && $0.key != interactionID }.map(\.key)
@@ -1007,6 +1060,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if persistedState.terminalRuns.count > maxProcessedEvents {
             persistedState.terminalRuns.removeAll(keepingCapacity: true)
         }
+        let toolCutoff = Date().timeIntervalSince1970 - permissionReviewToolTTL
+        persistedState.permissionReviewToolIDs = persistedState.permissionReviewToolIDs.filter { $0.value >= toolCutoff }
         _ = saveState()
     }
 
@@ -1022,6 +1077,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let folder = stateFile.deletingLastPathComponent()
         do {
             eventResolver.prune(now: Date().timeIntervalSince1970)
+            let reviewToolCutoff = Date().timeIntervalSince1970 - permissionReviewToolTTL
+            persistedState.permissionReviewToolIDs = persistedState.permissionReviewToolIDs.filter { $0.value >= reviewToolCutoff }
             persistedState.resolverState = eventResolver.state
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let data = try JSONEncoder.sortedPretty.encode(persistedState)
