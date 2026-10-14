@@ -22,7 +22,7 @@ cat > "$PROFILE/history/agents/m_history/system/assignment.md" <<'EOF'
 历史任务
 EOF
 printf '%s\n' '{"role":"user","content":"历史问题"}' '{"role":"assistant","content":"历史答案"}' > "$PROFILE/history/agents/m_history/system/trajectory.jsonl"
-DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS=3 "$BIN" >/dev/null 2>&1 &
+DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_COMPLETION_MERGE_SECONDS=0.5 "$BIN" >/dev/null 2>&1 &
 PID=$!
 sleep 2
 python3 - "$STATE" <<'PY'
@@ -70,7 +70,7 @@ sleep 1
 printf '%s\n' "[1:1:0101/000001.000000:INFO:x] [exit_intercept] Unregister blocker. scope_id=local-task-conversation, intercept_id=7__rfh__1:$CONVERSATION_ID, removed_count=1, blocker_count=0" >> "$LOG"
 sleep 5
 
-# 2. 等待用户：unregister 后的 grace 窗口内轨迹出现 interaction.ask，应只产生 waiting。
+# 2. 等待用户：unregister 后的短合并窗口内轨迹出现 interaction.ask，应取消完成并只产生 waiting。
 printf '%s\n' "[1:1:0101/000010.000000:INFO:x] [exit_intercept] Register added blocker. scope_id=local-task-conversation, intercept_id=7__rfh__1:$CONVERSATION_ID, priority=0, sequence=2, blocker_count=1" >> "$LOG"
 sleep 1
 printf '%s\n' "[1:1:0101/000011.000000:INFO:x] [exit_intercept] Unregister blocker. scope_id=local-task-conversation, intercept_id=7__rfh__1:$CONVERSATION_ID, removed_count=1, blocker_count=0" >> "$LOG"
@@ -96,9 +96,9 @@ assert d.get('conversationTitle')!='后台原生信号测试', d
 print(json.dumps({'processed_events':2,'simple_completion':1,'waiting':1,'premature_completion':0,'conversation_title':'真实对话标题'},ensure_ascii=False))
 PY
 
-# 用户完成第一个交互后，下一交互在 grace 窗口内到来，不得提前完成。
+# 用户完成第一个交互后，下一交互在短合并窗口内到来，不得提前完成。
 printf '%s\n' '{"role":"tool","content":"用户已完成选择","tool_call_id":"b"}' >> "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
-sleep 1
+sleep 0.2
 printf '%s\n' '{"role":"assistant","content":"请允许一次","tool_calls":[{"id":"c","type":"function","function":{"name":"interaction.authorize_folder","arguments":{}}}]}' >> "$PROFILE/$CONVERSATION_ID/agents/$AGENT_ID/system/trajectory.jsonl"
 sleep 1
 python3 - "$STATE" <<'PY'
@@ -155,7 +155,7 @@ PY
 /bin/kill -KILL "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 PID=""
-DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS=3 "$BIN" >/dev/null 2>&1 &
+DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_COMPLETION_MERGE_SECONDS=0.5 "$BIN" >/dev/null 2>&1 &
 PID=$!
 sleep 2
 python3 - "$STATE" <<'PY'

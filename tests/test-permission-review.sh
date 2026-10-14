@@ -9,7 +9,7 @@ SYSTEM="$ROOT/Profile 9/.doubao/agent_mode/workspace/.sessions/$CID/agents/$AGEN
 mkdir -p "$SYSTEM" "$LOGROOT"
 printf '%s\n' '# Assignment' '- Agent ID: m_permission_review' '- Role: main' > "$SYSTEM/assignment.md"
 : > "$SYSTEM/trajectory.jsonl"; LOG="$LOGROOT/saman_test.log"; : > "$LOG"
-DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_COMPLETION_GRACE_SECONDS=1 DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS=1 "$BIN" >/dev/null 2>&1 & PID=$!
+DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_COMPLETION_MERGE_SECONDS=0.5 "$BIN" >/dev/null 2>&1 & PID=$!
 sleep 4
 printf '%s\n' "[exit_intercept] Register added blocker. scope_id=local-task-conversation, intercept_id=review:$CID, priority=0, sequence=70, blocker_count=1" >> "$LOG"
 sleep 1
@@ -24,14 +24,14 @@ d=json.load(open(sys.argv[1])); cid=sys.argv[2]
 p=d.get('pendingInteractions',{}).get(cid,{})
 assert p == {'permission-review-1792000000000':'permission_review.authorize'}, d
 assert sum('|waiting_user|' in x for x in d.get('processedEvents',{})) == 1, d
-assert d.get('version') == 10, d
+assert d.get('version') == 11, d
 PY
 # Restart while the review is still pending. The persisted wait must survive,
 # but historical runtime lines must not emit a duplicate notification.
 /bin/kill -KILL "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 PID=""
-DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_COMPLETION_GRACE_SECONDS=1 DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS=1 "$BIN" >/dev/null 2>&1 & PID=$!
+DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" DOUBAO_NOTIFIER_LOG_ROOT="$LOGROOT" DOUBAO_NOTIFIER_STATE_FILE="$STATE" DOUBAO_NOTIFIER_DISABLE_NOTIFICATIONS=1 DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM=1 DOUBAO_NOTIFIER_COMPLETION_MERGE_SECONDS=0.5 "$BIN" >/dev/null 2>&1 & PID=$!
 sleep 3
 python3 - "$STATE" "$CID" <<'PY'
 import json,sys
@@ -58,5 +58,5 @@ import json,sys
 d=json.load(open(sys.argv[1])); cid=sys.argv[2]
 assert not d.get('pendingInteractions',{}).get(cid,{}), d
 assert sum('|waiting_user|' in x for x in d.get('processedEvents',{})) == 1, d
-print(json.dumps({'permission_review_waiting':1,'paired_button_duplicate':0,'restart_duplicate':0,'tool_started_resolved':True,'redraw_duplicate':0,'state_version':10},ensure_ascii=False))
+print(json.dumps({'permission_review_waiting':1,'paired_button_duplicate':0,'restart_duplicate':0,'tool_started_resolved':True,'redraw_duplicate':0,'state_version':11},ensure_ascii=False))
 PY

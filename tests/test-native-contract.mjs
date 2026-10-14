@@ -41,11 +41,13 @@ const mustContain = [
   ['page sync blocker filter', /PAGE_SYNC_BLOCKER_IGNORED/],
   ['native toolcall received signal', /nativeWaitingReceivedRegex/],
   ['native toolcall settled signal', /nativeWaitingSettledRegex/],
+  ['generic settled reconciliation', /anyToolSettledRegex/],
+  ['state-driven completion reevaluation', /private func reevaluateCompletion/],
   ['sandbox conversation mapping', /sandboxConversations/],
   ['provisional conversation migration', /resolver:provisional_migration/],
   ['unresolved completion hold', /unresolvedCompletionHold/],
   ['late waiting suppression', /STALE_WAITING_IGNORED/],
-  ['completion grace window', /completionGraceSeconds/],
+  ['completion merge window', /completionMergeSeconds/],
   ['persistent event ledger', /processedEvents:\s*\[String:\s*String\]/],
   ['concurrent blocker ledger', /activeInterceptors:\s*\[String:\s*\[String:\s*String\]\]/],
   ['recoverable interaction ledger', /pendingInteractions:\s*\[String:\s*\[String:\s*String\]\]/],
@@ -84,6 +86,8 @@ const mustContain = [
   ['structured activation error log', /recordActivationError\(\s*stage:/]
 ];
 const mustNotContain = [
+  ['no unknown indexeddb request-action fallback', /else\s*\{\s*kind\s*=\s*"request_action"/],
+  ['no multi-second completion grace', /completionGraceSeconds|interactionResumeGraceSeconds/],
   ['waiting marked as permanent terminal', /terminalRuns\[runID\]\s*=\s*"waiting_user"/],
   ['waiting clears active run', /activeRunIDs\.removeValue\(forKey:\s*watch\.conversationID\)/],
   ['assignment text title inference', /titleFromAssignment|prefix\(28\)/],

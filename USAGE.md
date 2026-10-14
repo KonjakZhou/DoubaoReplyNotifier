@@ -1,6 +1,12 @@
-# 豆包工作原生任务通知器 4.6.0
+# 豆包工作原生任务通知器 4.6.1
 
 这是一个独立的 macOS 菜单栏应用。它监听豆包工作写入本机的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver 或辅助功能树；权限审阅通过豆包工作原生日志中的审阅页面生命周期识别，不操作页面。
+
+## 4.6.1 完成状态收敛修复
+
+回复完成改为状态驱动：真实 blocker 已全部结束、没有待处理交互、没有未归属实时事件时，经 500ms 可取消合并窗口立即通知，不再固定等待 3 秒或在交互后等待 30 秒。合并窗口内出现新 blocker 或等待事件会取消本次完成通知并重新判断。
+
+IndexedDB 仅在结构中出现明确、已支持的等待标记时才生成等待；未知工具不再默认归类为 `request_action`。任意工具的 `execution_settled` 都会按调用 ID 清除同 ID 的冗余等待。状态升级到 v11 时会移除旧版遗留的 `indexeddb.*` 伪等待并重新构建运行中 blocker 状态。
 
 ## 4.6 权限审阅通知修复
 
@@ -174,7 +180,7 @@ Unregister blocker       → blocker 结束
 
 
 
-* 状态格式版本 10；新增权限审阅与后续工具调用的短期关联记录，并继续持久化 Resolver 状态和已结束 interaction tombstone。
+* 状态格式版本 11；升级时清理旧版遗留的 `indexeddb.*` 伪等待、重新构建运行中 blocker 状态，并继续持久化 Resolver 与权限审阅关联记录。
 
 * 运行日志、trajectory 与 WAL 使用持久化偏移。
 
@@ -204,6 +210,7 @@ swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swif
 /tmp/test-indexeddb-reader tests/fixtures/real-authorize-wal.bin
 swiftc Sources/PermissionReviewSource.swift tests/test-permission-review-source.swift -o /tmp/test-permission-review-source && /tmp/test-permission-review-source
 swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/test-event-resolver && /tmp/test-event-resolver
+bash tests/test-state-convergence.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-permission-review.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-native-toolcall.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
 bash tests/test-inflight-recovery.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"

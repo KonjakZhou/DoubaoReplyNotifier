@@ -105,16 +105,18 @@ struct IndexedDBInteractionReader {
             }
             let contextStart = max(value.startIndex, schemaRange.lowerBound - 768)
             let context = value[contextStart..<end]
-            let kind: String
+            let kind: String?
             if context.range(of: Data("approve".utf8)) != nil ||
                 context.range(of: Data("pc_native_may_involve".utf8)) != nil {
                 kind = "authorize"
             } else if context.range(of: Data("quick_reply".utf8)) != nil {
                 kind = "ask"
-            } else {
+            } else if context.range(of: Data("request_action".utf8)) != nil {
                 kind = "request_action"
+            } else {
+                kind = nil
             }
-            output.append((id, kind))
+            if let kind { output.append((id, kind)) }
             cursor = schemaRange.upperBound
         }
         return output

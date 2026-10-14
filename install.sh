@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.6.0"
-BUILD="11"
+VERSION="4.6.1"
+BUILD="12"
 APP="$HOME/Applications/Doubao Reply Notifier.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"

@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 10
+    var version = 11
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
@@ -36,7 +36,7 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 10
+        version = 11
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
         runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
@@ -72,6 +72,16 @@ private struct PersistedNotifierState: Codable {
                 interactions.filter { $0.value != "indexeddb.authorize" }
             }.filter { !$0.value.isEmpty }
             permissionReviewToolIDs.removeAll()
+        }
+        if sourceVersion < 11 {
+            pendingInteractions = pendingInteractions.mapValues { interactions in
+                interactions.filter { !$0.value.hasPrefix("indexeddb.") }
+            }.filter { !$0.value.isEmpty }
+            permissionReviewToolIDs.removeAll()
+            runtimeLogOffsets.removeAll()
+            activeRunIDs.removeAll()
+            activeInterceptors.removeAll()
+            awaitingActivityRuns.removeAll()
         }
     }
 }
@@ -112,12 +122,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let maxProcessedEvents = 4000
     private let processedEventTTL: TimeInterval = 7 * 24 * 60 * 60
     private let permissionReviewToolTTL: TimeInterval = 10 * 60
-    private let unresolvedCompletionHold: TimeInterval = 5.0
-    private lazy var completionGraceSeconds: TimeInterval = {
-        Double(environment["DOUBAO_NOTIFIER_COMPLETION_GRACE_SECONDS"] ?? "") ?? 3.0
-    }()
-    private lazy var interactionResumeGraceSeconds: TimeInterval = {
-        Double(environment["DOUBAO_NOTIFIER_INTERACTION_RESUME_GRACE_SECONDS"] ?? "") ?? 30.0
+    private let unresolvedCompletionHold: TimeInterval = 0.5
+    private lazy var completionMergeSeconds: TimeInterval = {
+        Double(environment["DOUBAO_NOTIFIER_COMPLETION_MERGE_SECONDS"] ?? "") ?? 0.5
     }()
     private let environment = ProcessInfo.processInfo.environment
     // 受控 action 标记：只有带该 userInfo 标记的通知才会被 didReceive 处理。
@@ -175,6 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     )
     private let nativeWaitingSettledRegex = try! NSRegularExpression(
         pattern: #"\"event\":\"toolcall\".*?\"phase\":\"execution_settled\".*?\"name\":\"(interaction(?:\.|_)(?:ask|request_action|authorize_folder))\".*?\"sandbox_id\":\"(sandbox-[0-9a-f-]+)\".*?\"tcid\":\"([0-9a-f-]{36})\""#
+    )
+    private let anyToolSettledRegex = try! NSRegularExpression(
+        pattern: #"\"event\":\"toolcall\".*?\"phase\":\"execution_settled\".*?\"name\":\"[^\"]+\".*?\"tcid\":\"([0-9a-f-]{36})\""#
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -630,8 +640,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if scheduleTerminals,
            let toolStarted = PermissionReviewSource.toolStarted(in: line) {
-            resolvePermissionReviews(conversationID: toolStarted.conversationID)
-            persistedState.permissionReviewToolIDs["\(toolStarted.conversationID)|\(toolStarted.toolCallID)"] = Date().timeIntervalSince1970
+            let resolvedReview = resolvePermissionReviews(conversationID: toolStarted.conversationID)
+            if resolvedReview {
+                persistedState.permissionReviewToolIDs["\(toolStarted.conversationID)|\(toolStarted.toolCallID)"] = Date().timeIntervalSince1970
+            }
         }
         if scheduleTerminals,
            let match = firstMatch(nativeWaitingReceivedRegex, line), match.count == 3 {
@@ -659,6 +671,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 source: "runtime:toolcall_settled"
             )
             for event in events { applyCanonicalEvent(event) }
+        }
+        if scheduleTerminals,
+           let match = firstMatch(anyToolSettledRegex, line), match.count == 1 {
+            resolveWaitingInteractionEverywhere(interactionID: match[0])
         }
 
         recentRuntimeContext.append(line)
@@ -735,7 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard interceptors.removeValue(forKey: blockerID) != nil else { return }
             persistedState.activeInterceptors[event.conversationID] = interceptors
             guard interceptors.isEmpty, persistedState.activeRunIDs[event.conversationID] == runID else { return }
-            scheduleCompletion(conversationID: event.conversationID, runID: runID, delay: completionGraceSeconds)
+            reevaluateCompletion(conversationID: event.conversationID)
         case .interactionWaiting:
             guard let interactionID = event.interactionID, let waitingTool = event.waitingTool else { return }
             registerWaitingInteraction(
@@ -755,11 +771,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func scheduleCompletion(conversationID: String, runID: String, delay: TimeInterval) {
+    private func reevaluateCompletion(conversationID: String) {
+        guard let runID = persistedState.activeRunIDs[conversationID],
+              persistedState.terminalRuns[runID] == nil,
+              (persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty,
+              (persistedState.pendingInteractions[conversationID] ?? [:]).isEmpty,
+              persistedState.awaitingActivityRuns[conversationID] == nil else {
+            if let pending = pendingCompletions.removeValue(forKey: conversationID) { pending.timer.invalidate() }
+            return
+        }
+        scheduleCompletion(conversationID: conversationID, runID: runID)
+    }
+
+    private func scheduleCompletion(conversationID: String, runID: String) {
         if persistedState.terminalRuns[runID] != nil { return }
         guard (persistedState.pendingInteractions[conversationID] ?? [:]).isEmpty else { return }
         if let pending = pendingCompletions.removeValue(forKey: conversationID) { pending.timer.invalidate() }
-        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: completionMergeSeconds, repeats: false) { [weak self] _ in
             guard let self,
                   self.persistedState.activeRunIDs[conversationID] == runID,
                   (self.persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty,
@@ -773,11 +801,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 hold: self.unresolvedCompletionHold
             ) {
                 self.pendingCompletions.removeValue(forKey: conversationID)
-                self.scheduleCompletion(
-                    conversationID: conversationID,
-                    runID: runID,
-                    delay: self.unresolvedCompletionHold
-                )
+                self.scheduleCompletion(conversationID: conversationID, runID: runID)
                 return
             }
             self.pendingCompletions.removeValue(forKey: conversationID)
@@ -864,42 +888,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for event in events { applyCanonicalEvent(event) }
 
         if sawAssistantActivity {
-            resolvePermissionReviews(conversationID: watch.conversationID)
+            _ = resolvePermissionReviews(conversationID: watch.conversationID)
         }
-        let interactions = persistedState.pendingInteractions[watch.conversationID] ?? [:]
-        guard interactions.isEmpty,
-              !results.isEmpty,
-              let runID = persistedState.activeRunIDs[watch.conversationID],
-              persistedState.awaitingActivityRuns[watch.conversationID] == nil,
-              (persistedState.activeInterceptors[watch.conversationID] ?? [:]).isEmpty else { return }
-        scheduleCompletion(
-            conversationID: watch.conversationID,
-            runID: runID,
-            delay: interactionResumeGraceSeconds
-        )
+        guard !results.isEmpty else { return }
+        reevaluateCompletion(conversationID: watch.conversationID)
     }
 
-    private func resolvePermissionReviews(conversationID: String) {
-        guard var interactions = persistedState.pendingInteractions[conversationID] else { return }
+    @discardableResult
+    private func resolvePermissionReviews(conversationID: String) -> Bool {
+        guard var interactions = persistedState.pendingInteractions[conversationID] else { return false }
         let reviewIDs = interactions.filter { $0.value.hasPrefix("permission_review.") }.map(\.key)
-        guard !reviewIDs.isEmpty else { return }
+        guard !reviewIDs.isEmpty else { return false }
         for reviewID in reviewIDs { interactions.removeValue(forKey: reviewID) }
         persistedState.pendingInteractions[conversationID] = interactions
         NSLog("PERMISSION_REVIEWS_RESOLVED conversation=%@ count=%d", conversationID, reviewIDs.count)
+        reevaluateCompletion(conversationID: conversationID)
+        return true
+    }
+
+    private func resolveWaitingInteractionEverywhere(interactionID: String) {
+        let conversationIDs = persistedState.pendingInteractions.compactMap { conversationID, interactions in
+            interactions[interactionID] == nil ? nil : conversationID
+        }
+        for conversationID in conversationIDs {
+            resolveWaitingInteraction(conversationID: conversationID, interactionID: interactionID)
+        }
     }
 
     private func resolveWaitingInteraction(conversationID: String, interactionID: String) {
         guard var interactions = persistedState.pendingInteractions[conversationID],
               interactions.removeValue(forKey: interactionID) != nil else { return }
         persistedState.pendingInteractions[conversationID] = interactions
-        guard interactions.isEmpty,
-              let runID = persistedState.activeRunIDs[conversationID],
-              (persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty else { return }
-        scheduleCompletion(
-            conversationID: conversationID,
-            runID: runID,
-            delay: interactionResumeGraceSeconds
-        )
+        reevaluateCompletion(conversationID: conversationID)
     }
 
     private func registerWaitingInteraction(

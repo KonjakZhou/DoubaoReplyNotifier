@@ -1,4 +1,4 @@
-# 架构重构测试方案（v4.6）
+# 架构重构测试方案（v4.6.1）
 
 ## 目标
 
@@ -67,7 +67,23 @@ bash tests/test-permission-review.sh "<签名 App 内的 DoubaoReplyNotifier 二
 5. 审阅 UI 重绘不重复通知。
 6. 普通导航及权限模式诊断不产生误报。
 
-### 4. 真实进程回放
+### 4. 状态收敛与伪等待回放
+
+命令：
+
+```bash
+bash tests/test-state-convergence.sh "<签名 App 内的 DoubaoReplyNotifier 二进制>"
+```
+
+覆盖：
+
+1. blocker 清零后在 500ms 可取消合并窗口内完成，1.6 秒观察窗口内可见完成事件。
+2. v10 升级到 v11 时清除旧 `indexeddb.*` 伪等待与权限关联垃圾。
+3. 升级时重建运行中 blocker，不保留旧版漏掉的 unregister 状态。
+4. 普通工具 `execution_settled` 能按相同调用 ID 清理冗余等待。
+5. 未知结构化 IndexedDB 工具不默认归类为 `request_action`。
+
+### 5. 真实进程回放
 
 命令：
 
@@ -84,7 +100,7 @@ bash tests/test-unmapped-native.sh "<签名 App 内的 DoubaoReplyNotifier 二�
 5. 写入相同 `tcid` 的 `execution_settled`，仍不提供映射。
 6. 断言等待解除、完成通知恰好发送一次、状态升级为 v9。
 
-### 5. 旧行为回归
+### 6. 旧行为回归
 
 必须全部运行：
 
@@ -98,6 +114,7 @@ swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swif
 /tmp/test-indexeddb-reader tests/fixtures/real-authorize-wal.bin
 swiftc Sources/PermissionReviewSource.swift tests/test-permission-review-source.swift -o /tmp/test-permission-review-source && /tmp/test-permission-review-source
 swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/test-event-resolver && /tmp/test-event-resolver
+bash tests/test-state-convergence.sh "<binary>"
 bash tests/test-permission-review.sh "<binary>"
 bash tests/test-native-toolcall.sh "<binary>"
 bash tests/test-inflight-recovery.sh "<binary>"
@@ -123,9 +140,9 @@ bash tests/test-integration.sh "<binary>"
 
 1. 使用 `install.sh` 从源码编译临时签名 App。
 2. 只有编译和签名校验成功后才停止旧版本并替换安装目录。
-3. 校验版本为 4.6.0、build 11。
+3. 校验版本为 4.6.1、build 12。
 4. 校验进程唯一运行。
-5. 校验旧 v8 状态自动解码并迁移为 v9。
+5. 校验旧 v10 状态自动迁移为 v11，清除 `indexeddb.*` 残留并重建 blocker。
 6. 校验安装二进制哈希与本次构建产物一致。
 
 ## 验收标准
@@ -133,6 +150,7 @@ bash tests/test-integration.sh "<binary>"
 - 全部命令退出码为 0。
 - Resolver 单测 12/12 通过。
 - 权限审阅解析与进程回放通过：双按钮 1 次、重启 0 重放、工具启动后解除、重绘 0 重复。
+- 状态收敛回放通过：未知工具 0 等待、v10 残留已清除、普通工具 settled 可对账、完成事件在 1.6 秒观察窗口内出现。
 - 无映射真实回放中：等待 1 次、提前完成 0 次、settled 后完成 1 次。
 - 旧回归测试全部保持通过。
 - 没有新增 Swift 编译警告。
