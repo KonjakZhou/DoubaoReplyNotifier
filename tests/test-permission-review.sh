@@ -24,7 +24,7 @@ d=json.load(open(sys.argv[1])); cid=sys.argv[2]
 p=d.get('pendingInteractions',{}).get(cid,{})
 assert p == {'permission-review-1792000000000':'permission_review.authorize'}, d
 assert sum('|waiting_user|' in x for x in d.get('processedEvents',{})) == 1, d
-assert d.get('version') == 11, d
+assert d.get('version') == 12, d
 PY
 # Restart while the review is still pending. The persisted wait must survive,
 # but historical runtime lines must not emit a duplicate notification.
@@ -58,5 +58,5 @@ import json,sys
 d=json.load(open(sys.argv[1])); cid=sys.argv[2]
 assert not d.get('pendingInteractions',{}).get(cid,{}), d
 assert sum('|waiting_user|' in x for x in d.get('processedEvents',{})) == 1, d
-print(json.dumps({'permission_review_waiting':1,'paired_button_duplicate':0,'restart_duplicate':0,'tool_started_resolved':True,'redraw_duplicate':0,'state_version':11},ensure_ascii=False))
+print(json.dumps({'permission_review_waiting':1,'paired_button_duplicate':0,'restart_duplicate':0,'tool_started_resolved':True,'redraw_duplicate':0,'state_version':12},ensure_ascii=False))
 PY

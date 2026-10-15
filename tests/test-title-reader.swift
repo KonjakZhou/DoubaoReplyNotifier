@@ -52,6 +52,27 @@ struct TitleReaderTest {
             fatalError("unknown conversation unexpectedly resolved")
         }
 
+        // Exact field boundary: permission_name must never be accepted as conversation name.
+        var polluted = Data("conversation-list-data-overall-v2".utf8)
+        polluted.append(Data(chineseID.utf8))
+        polluted.append(Data("permission_name".utf8))
+        polluted.append(0x22); polluted.append(22)
+        polluted.append(Data("ACCESS_COARSE_LOCATION".utf8))
+        assert(ConversationTitleReader.latestTitle(in: polluted, conversationID: Data(chineseID.utf8)) == nil)
+        func str(_ value: String) -> Data {
+            let payload = Data(value.utf8)
+            return Data([0x22]) + encodeVarint(payload.count) + payload
+        }
+        var object = Data([0xff,0x0f,0x6f])
+        for part in [str("schema"), str("conversation-list-data-overall-v2"), str("data"), Data([0x6f]),
+                     str("conversation_id"), str(chineseID), str("permission_name"), str("ACCESS_COARSE_LOCATION"),
+                     str("name"), str("Correct title"), Data([0x7b,3,0x7b,2])] { object.append(part) }
+        assert(ConversationTitleReader.structuredTitles(object)[chineseID] == "Correct title")
+        var wrongSchema = Data([0xff,0x0f,0x6f])
+        for part in [str("schema"), str("message-data"), str("data"), Data([0x6f]), str("conversation_id"),
+                     str(chineseID), str("name"), str("Wrong message title"), Data([0x7b,2,0x7b,2])] { wrongSchema.append(part) }
+        assert(ConversationTitleReader.structuredTitles(wrongSchema).isEmpty)
+
         if CommandLine.arguments.count == 4 {
             let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
             let actual = ConversationTitleReader().title(conversationID: CommandLine.arguments[2], doubaoDataRoot: root)

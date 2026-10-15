@@ -31,7 +31,8 @@ function isHelper(bundleID, path = "") {
 
 function chooseTarget({ preferredBundleID, runningBundleIDs = [], installedBundleIDs = [] }) {
   const preferred = TARGET_BUNDLE_IDS.includes(preferredBundleID) ? preferredBundleID : null;
-  if (preferred) return preferred;
+  const available = (id) => runningBundleIDs.includes(id) || installedBundleIDs.includes(id);
+  if (preferred && available(preferred)) return preferred;
   return TARGET_BUNDLE_IDS.find((id) => runningBundleIDs.includes(id))
     || TARGET_BUNDLE_IDS.find((id) => installedBundleIDs.includes(id))
     || null;
@@ -76,6 +77,8 @@ const targetCases = [
   [{ preferredBundleID: "com.bot.pc.doubao", runningBundleIDs: ["com.work.pc.doubao"], installedBundleIDs: TARGET_BUNDLE_IDS }, "com.bot.pc.doubao"],
   [{ preferredBundleID: "com.evil.helper", runningBundleIDs: ["com.work.pc.doubao"], installedBundleIDs: TARGET_BUNDLE_IDS }, "com.work.pc.doubao"],
   [{ preferredBundleID: null, runningBundleIDs: [], installedBundleIDs: TARGET_BUNDLE_IDS }, "com.work.pc.doubao"],
+  [{ preferredBundleID: "com.bot.pc.doubao", runningBundleIDs: ["com.work.pc.doubao"], installedBundleIDs: ["com.work.pc.doubao"] }, "com.work.pc.doubao"],
+  [{ preferredBundleID: "com.bot.pc.doubao", runningBundleIDs: [], installedBundleIDs: [] }, null],
   [{ preferredBundleID: null, runningBundleIDs: [], installedBundleIDs: ["com.bot.pc.doubao"] }, "com.bot.pc.doubao"]
 ];
 for (const [input, expected] of targetCases) {

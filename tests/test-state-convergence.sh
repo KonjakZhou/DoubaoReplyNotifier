@@ -23,8 +23,8 @@ import json,sys
 d=json.load(open(sys.argv[1])); cid=sys.argv[2]
 completed=[(k,v) for k,v in d.get('processedEvents',{}).items() if k.startswith(cid+'|reply_completed|')]
 assert len(completed)==1,d
-assert d.get('version')==11,d
-print(json.dumps({'fast_completion':True,'observed_within_seconds':1.6,'state_version':11}))
+assert d.get('version')==12,d
+print(json.dumps({'fast_completion':True,'observed_within_seconds':1.6,'state_version':12}))
 PY
 
 # Seed the exact failure shape from v10, then restart. Migration must remove
@@ -45,7 +45,7 @@ sleep 3
 python3 - "$STATE" "$CID" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); cid=sys.argv[2]
-assert d.get('version')==11,d
+assert d.get('version')==12,d
 assert not d.get('pendingInteractions',{}).get(cid),d
 assert not d.get('permissionReviewToolIDs'),d
 assert 'stale' not in d.get('activeInterceptors',{}).get(cid,{}),d
