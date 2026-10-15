@@ -167,6 +167,8 @@ bash tests/test-unmapped-native.sh "<签名 App 内的 DoubaoReplyNotifier 二�
 
 必须全部运行：
 
+真实 WAL 用例依赖本机保留、已忽略且取消跟踪的 `tests/fixtures/real-authorize-wal.bin`。仅检出源码时若没有该夹具，必须记为缺少材料，不能用人工排列字段替代，也不能宣称该用例已通过。现场修复与诊断记录亦仅在本机保留；取消跟踪不清除既有提交历史。
+
 
 
 ```

@@ -5,3 +5,9 @@
 .build/
 build/
 DerivedData/
+
+# Real local database fixtures and on-machine diagnostic evidence.
+# Ignoring/untracking does not remove copies from existing Git history.
+/tests/fixtures/real-*.bin
+/artifacts/ROOTCAUSE-REPORT.md
+/artifacts/E2E-REPAIR-RESULTS.md

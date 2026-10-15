@@ -223,6 +223,8 @@ Unregister blocker       → blocker 结束
 
 ## 测试
 
+真实数据库夹具 `tests/fixtures/real-authorize-wal.bin` 与现场诊断记录仅在本机保留，已配置 `.gitignore` 并取消 Git 跟踪。下方真实 WAL 测试需要本机夹具；仅检出源码时不能将缺少夹具的用例记为通过。此次未改写历史，既有提交中仍可能包含这些材料，不能把当前忽略规则当作历史脱敏。
+
 
 
 ```
