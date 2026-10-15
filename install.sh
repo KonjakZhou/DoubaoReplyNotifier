@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.7.1"
-BUILD="14"
+VERSION="4.7.2"
+BUILD="16"
 APP="$HOME/Applications/Doubao Reply Notifier.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -15,6 +15,10 @@ trap '/bin/rm -rf "$STAGE"' EXIT
 
 stop_previous() {
   local pids
+  local service="gui/$(/usr/bin/id -u)/com.local.doubao-reply-notifier.agent"
+  if /bin/launchctl print "$service" >/dev/null 2>&1; then
+    /bin/launchctl bootout "$service" || return 1
+  fi
   pids="$(/usr/bin/pgrep -f "$MACOS/DoubaoReplyNotifier" || true)"
   [[ -z "$pids" ]] && return 0
   for pid in $pids; do /bin/kill -TERM "$pid" 2>/dev/null || true; done
@@ -100,7 +104,10 @@ if [[ "$INSTALLED_VERSION" != "$VERSION" || "$INSTALLED_BUILD" != "$BUILD" ]]; t
   exit 1
 fi
 if [[ "${DOUBAO_NOTIFIER_SKIP_LAUNCH:-0}" != "1" ]]; then
-  /usr/bin/open -g "$APP"
+  if ! /bin/bash "$ROOT/scripts/manage-service.sh" start "$APP" "$HOME" "$VERSION" "$BUILD"; then
+    printf '%s\n' '新版文件已安装，但服务启动验证失败；未宣称启动成功。' >&2
+    exit 1
+  fi
 fi
 printf '%s\n' \
   "安装成功：$APP" \

@@ -260,6 +260,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         scanTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.scanSources() }
         if let scanTimer { RunLoop.current.add(scanTimer, forMode: .common) }
         scanSources()
+        if environment["DOUBAO_NOTIFIER_MANAGED_SERVICE"] == "1" {
+            let health: [String: Any] = [
+                "pid": ProcessInfo.processInfo.processIdentifier,
+                "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "",
+                "build": Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
+                "ready": true
+            ]
+            do {
+                let data = try JSONSerialization.data(withJSONObject: health, options: [.sortedKeys])
+                try data.write(to: stateFile.deletingLastPathComponent().appendingPathComponent("runtime-health.json"), options: .atomic)
+            } catch { NSLog("RUNTIME_HEALTH_WRITE_FAILED error=%@", error.localizedDescription) }
+        }
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
@@ -459,8 +471,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func registerLoginItem() {
         if #available(macOS 13.0, *) {
-            do { try SMAppService.mainApp.register() }
-            catch { NSLog("Unable to register login item: %@", error.localizedDescription) }
+            do {
+                if environment["DOUBAO_NOTIFIER_MANAGED_SERVICE"] == "1" {
+                    if SMAppService.mainApp.status != .notRegistered { try SMAppService.mainApp.unregister() }
+                } else { try SMAppService.mainApp.register() }
+            }
+            catch { NSLog("Unable to update login item: %@", error.localizedDescription) }
         }
     }
 

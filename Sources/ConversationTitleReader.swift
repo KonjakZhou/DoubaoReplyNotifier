@@ -77,12 +77,9 @@ struct ConversationTitleReader {
     }
 
     static func structuredTitles(_ data: Data) -> [String: String] {
-        // Chromium may wrap a V8 value using the IndexedDB Snappy marker ff <version> fe 02.
-        var bytes = Array(data)
-        if bytes.count > 4, bytes[0] == 0xff, bytes[2] == 0xfe, bytes[3] == 2,
-           let unpacked = LevelDBTitleValues.snappy(Array(bytes.dropFirst(4))) { bytes = unpacked }
-        guard let header = Data(bytes).range(of: Data([0xff, 0x0f])) else { return [:] }
-        var decoder = V8TitleDecoder(bytes: bytes, cursor: header.upperBound)
+        guard let payload = serializedPayload(data) else { return [:] }
+        let bytes = Array(payload)
+        var decoder = V8TitleDecoder(bytes: bytes, cursor: 2)
         guard let root = decoder.value() else { return [:] }
         guard case .object(let object) = root,
               case .string(let schema)? = object["schema"],
@@ -102,6 +99,34 @@ struct ConversationTitleReader {
         }
         visit(root)
         return result
+    }
+
+    /// Only unwrap recognized headers at the current cursor. Never search compressed data
+    /// for an incidental V8 marker. IndexedDB values can include a leading record varint.
+    private static func serializedPayload(_ data: Data) -> Data? {
+        var bytes = Array(data)
+        guard !bytes.isEmpty else { return nil }
+        if bytes[0] != 0xff {
+            guard let (_, cursor) = LevelDBTitleValues.vi(bytes, 0), cursor <= 10,
+                  cursor < bytes.count, bytes[cursor] == 0xff else { return nil }
+            bytes = Array(bytes.dropFirst(cursor))
+        }
+        for _ in 0..<4 {
+            if bytes.starts(with: [0xff, 0x0f]) { return Data(bytes) }
+            if bytes.starts(with: [0xff, 0x11, 0x02]) {
+                guard let unpacked = LevelDBTitleValues.snappy(Array(bytes.dropFirst(3))) else { return nil }
+                bytes = unpacked
+            } else if bytes.count >= 15, bytes.starts(with: [0xff, 0x15, 0xfe, 0x00]),
+                      bytes[4..<15].allSatisfy({ $0 == 0 }) {
+                bytes = Array(bytes.dropFirst(15))
+            } else if bytes.count > 4, bytes[0] == 0xff, bytes[2] == 0xfe, bytes[3] == 2 {
+                guard let unpacked = LevelDBTitleValues.snappy(Array(bytes.dropFirst(4))) else { return nil }
+                bytes = unpacked
+            } else {
+                return nil
+            }
+        }
+        return nil
     }
 
     private static func sanitize(_ value: String) -> String? {

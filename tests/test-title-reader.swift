@@ -73,6 +73,37 @@ struct TitleReaderTest {
                      str(chineseID), str("name"), str("Wrong message title"), Data([0x7b,2,0x7b,2])] { wrongSchema.append(part) }
         assert(ConversationTitleReader.structuredTitles(wrongSchema).isEmpty)
 
+        // Serialization unit fixtures exercise headers only; real on-machine values
+        // are separately read end-to-end without including their contents in Git.
+        func literalSnappy(_ value: Data) -> Data {
+            var result = encodeVarint(value.count)
+            let n = value.count - 1
+            if n < 60 { result.append(UInt8(n << 2)) }
+            else {
+                var length = n
+                var encoded: [UInt8] = []
+                repeat { encoded.append(UInt8(length & 255)); length >>= 8 } while length > 0
+                result.append(UInt8((59 + encoded.count) << 2))
+                result.append(contentsOf: encoded)
+            }
+            result.append(value)
+            return result
+        }
+        let outerHeader = Data([0xff,0x15,0xfe,0]) + Data(repeating: 0, count: 11)
+        let wrapped = encodeVarint(1715) + Data([0xff,0x11,2]) + literalSnappy(outerHeader + object)
+        assert(ConversationTitleReader.structuredTitles(wrapped)[chineseID] == "Correct title")
+        assert(ConversationTitleReader.structuredTitles(outerHeader + object)[chineseID] == "Correct title")
+        let legacyCompressed = Data([0xff,0x15,0xfe,2]) + literalSnappy(object)
+        assert(ConversationTitleReader.structuredTitles(legacyCompressed)[chineseID] == "Correct title")
+        assert(ConversationTitleReader.structuredTitles(Data(wrapped.dropLast())).isEmpty)
+        assert(ConversationTitleReader.structuredTitles(Data([0xff,0x11,2,0x01]) + object).isEmpty)
+        assert(ConversationTitleReader.structuredTitles(Data([0xff,0x7e,0x02]) + object).isEmpty)
+        assert(ConversationTitleReader.structuredTitles(Data("irrelevant field bytes".utf8) + object).isEmpty)
+
+        if CommandLine.arguments.count == 2 {
+            let value = try! Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+            assert(ConversationTitleReader.structuredTitles(value)["38447401633048578"] == "Mac上Command+M的原始功能")
+        }
         if CommandLine.arguments.count == 4 {
             let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
             let actual = ConversationTitleReader().title(conversationID: CommandLine.arguments[2], doubaoDataRoot: root)
@@ -81,6 +112,6 @@ struct TitleReaderTest {
             }
         }
 
-        print("{\"utf16_title\":true,\"one_byte_title\":true,\"latest_record_wins\":true}")
+        print("{\"utf16_title\":true,\"one_byte_title\":true,\"latest_record_wins\":true,\"outer_snappy_headers\":true,\"malformed_compression_rejected\":true}")
     }
 }
