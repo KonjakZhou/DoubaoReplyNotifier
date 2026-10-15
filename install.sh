@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.6.1"
-BUILD="12"
+VERSION="4.7.0"
+BUILD="13"
 APP="$HOME/Applications/Doubao Reply Notifier.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -29,44 +29,60 @@ stop_previous() {
   [[ -z "$pids" ]]
 }
 
-SWIFTC="$(/usr/bin/xcrun --find swiftc 2>/dev/null || true)"
-SDKROOT="$(/usr/bin/xcrun --show-sdk-path 2>/dev/null || true)"
+PREBUILT_APP="$ROOT/Doubao Reply Notifier.app"
 HOST_ARCH="$(/usr/bin/uname -m)"
 if [[ "$HOST_ARCH" != "arm64" && "$HOST_ARCH" != "x86_64" ]]; then
   printf '%s\n' "不支持的 Mac 架构：$HOST_ARCH" >&2
   exit 1
 fi
-if [[ -z "$SWIFTC" || -z "$SDKROOT" ]]; then
-  printf '%s\n' "未找到 Swift 编译器或 macOS SDK。请先安装 Apple Command Line Tools：xcode-select --install" >&2
-  exit 1
-fi
 
-/bin/mkdir -p "$STAGED_MACOS" "$STAGED_RESOURCES"
-"$SWIFTC" -O \
-  -sdk "$SDKROOT" \
-  -target "${HOST_ARCH}-apple-macosx13.0" \
-  -framework AppKit \
-  -framework UserNotifications \
-  -framework CryptoKit \
-  -framework ServiceManagement \
-  "$ROOT/Sources/EventArchitecture.swift" \
-  "$ROOT/Sources/PermissionReviewSource.swift" \
-  "$ROOT/Sources/ConversationTitleReader.swift" \
-  "$ROOT/Sources/IndexedDBInteractionReader.swift" \
-  "$ROOT/Sources/main.swift" -o "$STAGED_MACOS/DoubaoReplyNotifier"
-/bin/cp "$ROOT/assets/AppIcon.icns" "$STAGED_RESOURCES/AppIcon.icns"
-/usr/bin/plutil -create xml1 "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleName -string "Doubao Reply Notifier" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleDisplayName -string "豆包回复通知" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleIdentifier -string "com.local.doubao-reply-notifier" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleVersion -string "$BUILD" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleShortVersionString -string "$VERSION" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundlePackageType -string "APPL" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleExecutable -string "DoubaoReplyNotifier" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert CFBundleIconFile -string "AppIcon.icns" "$STAGED_CONTENTS/Info.plist"
-/usr/bin/plutil -insert LSUIElement -bool true "$STAGED_CONTENTS/Info.plist"
-/usr/bin/codesign --force --deep --sign - "$STAGED_APP"
-/usr/bin/codesign --verify --deep --strict "$STAGED_APP"
+if [[ -d "$PREBUILT_APP" ]]; then
+  /bin/cp -R "$PREBUILT_APP" "$STAGED_APP"
+  PREBUILT_VERSION="$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$STAGED_CONTENTS/Info.plist")"
+  PREBUILT_BUILD="$(/usr/bin/plutil -extract CFBundleVersion raw "$STAGED_CONTENTS/Info.plist")"
+  if [[ "$PREBUILT_VERSION" != "$VERSION" || "$PREBUILT_BUILD" != "$BUILD" ]]; then
+    printf '%s\n' "分发包版本校验失败：期望 $VERSION ($BUILD)，实际 $PREBUILT_VERSION ($PREBUILT_BUILD)。" >&2
+    exit 1
+  fi
+  /usr/bin/codesign --verify --deep --strict "$STAGED_APP"
+  if ! /usr/bin/file "$STAGED_MACOS/DoubaoReplyNotifier" | /usr/bin/grep -q "$HOST_ARCH"; then
+    printf '%s\n' "分发包不包含当前 Mac 架构：$HOST_ARCH" >&2
+    exit 1
+  fi
+else
+  SWIFTC="$(/usr/bin/xcrun --find swiftc 2>/dev/null || true)"
+  SDKROOT="$(/usr/bin/xcrun --show-sdk-path 2>/dev/null || true)"
+  if [[ -z "$SWIFTC" || -z "$SDKROOT" ]]; then
+    printf '%s\n' "未找到预编译 App，且本机缺少 Apple Command Line Tools。请使用完整分发包，或执行 xcode-select --install。" >&2
+    exit 1
+  fi
+  /bin/mkdir -p "$STAGED_MACOS" "$STAGED_RESOURCES"
+  "$SWIFTC" -O \
+    -sdk "$SDKROOT" \
+    -target "${HOST_ARCH}-apple-macosx13.0" \
+    -framework AppKit \
+    -framework UserNotifications \
+    -framework CryptoKit \
+    -framework ServiceManagement \
+    "$ROOT/Sources/EventArchitecture.swift" \
+    "$ROOT/Sources/PermissionReviewSource.swift" \
+    "$ROOT/Sources/ConversationTitleReader.swift" \
+    "$ROOT/Sources/IndexedDBInteractionReader.swift" \
+    "$ROOT/Sources/main.swift" -o "$STAGED_MACOS/DoubaoReplyNotifier"
+  /bin/cp "$ROOT/assets/AppIcon.icns" "$STAGED_RESOURCES/AppIcon.icns"
+  /usr/bin/plutil -create xml1 "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleName -string "Doubao Reply Notifier" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleDisplayName -string "豆包回复通知" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleIdentifier -string "com.local.doubao-reply-notifier" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleVersion -string "$BUILD" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleShortVersionString -string "$VERSION" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundlePackageType -string "APPL" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleExecutable -string "DoubaoReplyNotifier" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert CFBundleIconFile -string "AppIcon.icns" "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/plutil -insert LSUIElement -bool true "$STAGED_CONTENTS/Info.plist"
+  /usr/bin/codesign --force --deep --sign - "$STAGED_APP"
+  /usr/bin/codesign --verify --deep --strict "$STAGED_APP"
+fi
 
 if ! stop_previous; then
   printf '%s\n' "无法停止旧版通知器，请退出菜单栏中的旧通知器后重试。" >&2

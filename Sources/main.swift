@@ -97,11 +97,19 @@ private struct TrajectoryRecord: Decodable {
     let tool_calls: [ToolCall]?
 }
 
+private struct DoubaoProduct {
+    let displayName: String
+    let bundleID: String
+    let dataRoot: URL
+    let workspaceDirectoryName: String
+}
+
 private struct MainAgentWatch {
     let conversationID: String
     let agentID: String
     let trajectoryURL: URL
     let assignmentURL: URL
+    let productBundleID: String
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -130,10 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // 受控 action 标记：只有带该 userInfo 标记的通知才会被 didReceive 处理。
     private static let actionMarkerKey = "com.local.doubao-reply-notifier.action"
     private static let actionMarkerValue = "activate"
+    private static let targetBundleUserInfoKey = "com.local.doubao-reply-notifier.target-bundle-id"
     private static let replyCategoryIdentifier = "com.local.doubao-reply-notifier.category.reply"
     private static let activateActionIdentifier = "com.local.doubao-reply-notifier.action.activate"
-    // 目标应用：豆包主应用 Bundle ID。绝不允许启动 com.bot.pc.doubao.browser。
-    private static let targetBundleID = "com.bot.pc.doubao"
+    // 主应用候选按优先级排列。豆包工作优先；保留旧豆包兼容。绝不解析或启动 Browser helper。
+    private static let targetBundleIDs = ["com.work.pc.doubao", "com.bot.pc.doubao"]
     private let activationErrorQueue = DispatchQueue(label: "com.local.doubao-reply-notifier.activation-errors")
     private lazy var activationErrorFile: URL = {
         if let override = environment["DOUBAO_NOTIFIER_ACTIVATION_ERROR_LOG"], !override.isEmpty {
@@ -142,18 +151,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/DoubaoReplyNotifier/activation-errors.log")
     }()
-    private lazy var doubaoDataRoot: URL = {
+    private lazy var products: [DoubaoProduct] = {
+        let home = FileManager.default.homeDirectoryForCurrentUser
         if let override = environment["DOUBAO_NOTIFIER_DATA_ROOT"], !override.isEmpty {
-            return URL(fileURLWithPath: override, isDirectory: true)
+            let root = URL(fileURLWithPath: override, isDirectory: true)
+            let workspaceDirectoryName = environment["DOUBAO_NOTIFIER_WORKSPACE_DIR"] ?? ".doubao"
+            let bundleID = environment["DOUBAO_NOTIFIER_TARGET_BUNDLE_ID"] ?? Self.targetBundleIDs[0]
+            return [DoubaoProduct(
+                displayName: "豆包工作",
+                bundleID: bundleID,
+                dataRoot: root,
+                workspaceDirectoryName: workspaceDirectoryName
+            )]
         }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Doubao")
+        return [
+            DoubaoProduct(
+                displayName: "豆包工作",
+                bundleID: "com.work.pc.doubao",
+                dataRoot: home.appendingPathComponent("Library/Application Support/DoubaoWork", isDirectory: true),
+                workspaceDirectoryName: ".doubaowork"
+            ),
+            DoubaoProduct(
+                displayName: "豆包",
+                bundleID: "com.bot.pc.doubao",
+                dataRoot: home.appendingPathComponent("Library/Application Support/Doubao", isDirectory: true),
+                workspaceDirectoryName: ".doubao"
+            )
+        ]
     }()
-    private lazy var runtimeLogRoot: URL = {
+    private lazy var runtimeLogRoots: [URL] = {
         if let override = environment["DOUBAO_NOTIFIER_LOG_ROOT"], !override.isEmpty {
-            return URL(fileURLWithPath: override, isDirectory: true)
+            return [URL(fileURLWithPath: override, isDirectory: true)]
         }
-        return doubaoDataRoot.appendingPathComponent("sdk_storage/log", isDirectory: true)
+        return products.map { $0.dataRoot.appendingPathComponent("sdk_storage/log", isDirectory: true) }
     }()
     private lazy var stateFile: URL = {
         if let override = environment["DOUBAO_NOTIFIER_STATE_FILE"], !override.isEmpty {
@@ -193,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 注册带“打开豆包”显式 action 的 category；不使用 .foreground，避免把本通知器带到前台。
         let activateAction = UNNotificationAction(
             identifier: Self.activateActionIdentifier,
-            title: "打开豆包",
+            title: "打开豆包工作",
             options: []
         )
         notificationCenter.setNotificationCategories([
@@ -207,7 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 一次性测试投递：由环境变量指定唯一标题，走与生产完全一致的 marker+category 投递路径，
         // 投递后短暂等待即退出（用于人工点击回归，避免常驻第二实例）。
         if let testTitle = environment["DOUBAO_NOTIFIER_TEST_TITLE"], !testTitle.isEmpty {
-            let testBody = environment["DOUBAO_NOTIFIER_TEST_BODY"] ?? "点击此通知应激活豆包主应用。"
+            let testBody = environment["DOUBAO_NOTIFIER_TEST_BODY"] ?? "点击此通知应激活对应的豆包主应用。"
             let uniq = String(UUID().uuidString.prefix(8))
             NSLog("ONESHOT_POST_BEGIN id=doubao-reply-oneshot-%@ title=%@", uniq, testTitle)
             postNotification(identifier: "doubao-reply-oneshot-\(uniq)", title: testTitle, body: testBody) { _ in
@@ -261,7 +291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case UNNotificationDefaultActionIdentifier, Self.activateActionIdentifier:
             // 默认点击（通知主体）或显式“打开豆包”按钮 → 激活/启动豆包主应用。
             NSLog("RESPONSE_ACCEPTED reason=activate id=%@ action=%@", request.identifier, actionIdentifier)
-            activateDoubaoApp(completion: completionHandler)
+            activateDoubaoApp(preferredBundleID: userInfo[Self.targetBundleUserInfoKey] as? String, completion: completionHandler)
         case UNNotificationDismissActionIdentifier:
             // 划掉/关闭：不激活，仅结束。
             NSLog("RESPONSE_IGNORED reason=dismiss id=%@ action=%@", request.identifier, actionIdentifier)
@@ -280,20 +310,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return String(describing: value) == actionMarkerValue
     }
 
-    private func activateDoubaoApp(completion: @escaping () -> Void) {
+    private func activateDoubaoApp(preferredBundleID: String? = nil, completion: @escaping () -> Void) {
         let workspace = NSWorkspace.shared
-        // D) 统一入口：先按 Bundle ID 定位豆包主应用（已运行 / 未运行都走这一条路）。
-        guard let appURL = workspace.urlForApplication(withBundleIdentifier: Self.targetBundleID) else {
+        // 统一入口：通知携带所属产品主 Bundle ID；仅接受产品白名单。否则优先当前运行的主应用。
+        let allowedBundleIDs = Set(products.map(\.bundleID) + Self.targetBundleIDs)
+        let safePreferredBundleID = preferredBundleID.flatMap { allowedBundleIDs.contains($0) ? $0 : nil }
+        let runningBundleIDs = Set(workspace.runningApplications.compactMap(\.bundleIdentifier))
+        var orderedBundleIDs = products.map(\.bundleID) + Self.targetBundleIDs.filter { id in
+            !products.contains(where: { $0.bundleID == id })
+        }
+        if let safePreferredBundleID {
+            orderedBundleIDs.removeAll(where: { $0 == safePreferredBundleID })
+            orderedBundleIDs.insert(safePreferredBundleID, at: 0)
+        }
+        let targetBundleID = safePreferredBundleID
+            ?? orderedBundleIDs.first(where: { runningBundleIDs.contains($0) })
+            ?? orderedBundleIDs.first(where: { workspace.urlForApplication(withBundleIdentifier: $0) != nil })
+        guard let targetBundleID,
+              let appURL = workspace.urlForApplication(withBundleIdentifier: targetBundleID) else {
             recordActivationError(
                 stage: "locate",
                 reason: "bundle_id_not_found",
-                detail: "bundleID=\(Self.targetBundleID)"
+                detail: "bundleIDs=\(orderedBundleIDs.joined(separator: ","))"
             )
-            NSLog("LAUNCH_FAILED stage=locate reason=bundle_id_not_found bundleID=%@", Self.targetBundleID)
+            NSLog("LAUNCH_FAILED stage=locate reason=bundle_id_not_found bundleIDs=%@", orderedBundleIDs.joined(separator: ","))
             completion()
             return
         }
-        // 校验解析结果：先显式挡掉 browser helper，再做精确相等校验。
+        // 校验解析结果：显式拒绝任何 Browser/Helper，并要求命中所选主 Bundle ID。
         guard let resolvedID = Bundle(url: appURL)?.bundleIdentifier else {
             recordActivationError(
                 stage: "verify",
@@ -303,7 +347,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             completion()
             return
         }
-        guard !resolvedID.hasSuffix(".browser") else {
+        let loweredPath = appURL.path.lowercased()
+        guard !resolvedID.lowercased().contains("browser"),
+              !resolvedID.lowercased().contains("helper"),
+              !loweredPath.contains(" browser.app/"),
+              !loweredPath.contains(" helper") else {
             recordActivationError(
                 stage: "verify",
                 reason: "refused_browser_helper",
@@ -312,26 +360,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             completion()
             return
         }
-        guard resolvedID == Self.targetBundleID else {
+        guard resolvedID == targetBundleID else {
             recordActivationError(
                 stage: "verify",
                 reason: "resolved_bundle_mismatch",
-                detail: "expected=\(Self.targetBundleID) resolved=\(resolvedID) url=\(appURL.path)"
+                detail: "expected=\(targetBundleID) resolved=\(resolvedID) url=\(appURL.path)"
             )
             completion()
             return
         }
-        // E) 已运行：记录 ACTIVATE_EXISTING，并尽力调用旧版可靠 API activateIgnoringOtherApps。
-        //    但它不是唯一动作——随后统一用 openApplication(activates=true) 真正激活/兜底，
-        //    不再把 macOS14 的 running.activate(from:.current) 当作唯一激活手段。
-        if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == Self.targetBundleID }) {
-            NSLog("ACTIVATE_EXISTING pid=%d bundleID=%@", running.processIdentifier, Self.targetBundleID)
+        if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == targetBundleID }) {
+            NSLog("ACTIVATE_EXISTING pid=%d bundleID=%@", running.processIdentifier, targetBundleID)
             if #unavailable(macOS 14.0) {
                 running.activate(options: [.activateIgnoringOtherApps])
             }
         }
-        // D) 统一真正激活/启动：openApplication + activates=true。
-        //    对已运行实例会把它带到前台；对未运行实例则启动并激活。
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         workspace.openApplication(at: appURL, configuration: config) { [weak self] runningApp, error in
@@ -395,23 +438,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func sessionRoots() -> [URL] {
-        guard let profiles = try? FileManager.default.contentsOfDirectory(
-            at: doubaoDataRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return profiles.compactMap { profileURL in
-            let name = profileURL.lastPathComponent
-            guard name == "Default" || name.hasPrefix("Profile ") else { return nil }
-            let sessionsURL = profileURL.appendingPathComponent(".doubao/agent_mode/workspace/.sessions", isDirectory: true)
-            var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: sessionsURL.path, isDirectory: &isDirectory) && isDirectory.boolValue
-                ? sessionsURL : nil
+    private func sessionRoots() -> [(root: URL, product: DoubaoProduct)] {
+        products.flatMap { product -> [(root: URL, product: DoubaoProduct)] in
+            guard let profiles = try? FileManager.default.contentsOfDirectory(
+                at: product.dataRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            ) else { return [] }
+            return profiles.compactMap { profileURL in
+                let name = profileURL.lastPathComponent
+                guard name == "Default" || name.hasPrefix("Profile ") else { return nil }
+                let sessionsURL = profileURL.appendingPathComponent(
+                    "\(product.workspaceDirectoryName)/agent_mode/workspace/.sessions",
+                    isDirectory: true
+                )
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: sessionsURL.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else { return nil }
+                return (root: sessionsURL, product: product)
+            }
         }
     }
 
     private func discoverMainAgents() -> [MainAgentWatch] {
         var result: [MainAgentWatch] = []
-        for sessionsRoot in sessionRoots() {
+        for sessionSource in sessionRoots() {
+            let sessionsRoot = sessionSource.root
             guard let conversations = try? FileManager.default.contentsOfDirectory(
                 at: sessionsRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
             ) else { continue }
@@ -426,14 +476,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     let assignmentURL = systemURL.appendingPathComponent("assignment.md")
                     let trajectoryURL = systemURL.appendingPathComponent("trajectory.jsonl")
                     guard FileManager.default.fileExists(atPath: assignmentURL.path),
-                          FileManager.default.fileExists(atPath: trajectoryURL.path),
-                          let assignment = try? String(contentsOf: assignmentURL, encoding: .utf8),
-                          assignment.contains("- Role: main") else { continue }
+                          FileManager.default.fileExists(atPath: trajectoryURL.path) else { continue }
                     result.append(MainAgentWatch(
                         conversationID: conversationID,
                         agentID: agentURL.lastPathComponent,
                         trajectoryURL: trajectoryURL,
-                        assignmentURL: assignmentURL
+                        assignmentURL: assignmentURL,
+                        productBundleID: sessionSource.product.bundleID
                     ))
                 }
             }
@@ -442,10 +491,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func discoverRuntimeLogs() -> [URL] {
-        guard let entries = try? FileManager.default.contentsOfDirectory(
-            at: runtimeLogRoot, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return entries.filter { $0.lastPathComponent.hasPrefix("saman_") && $0.pathExtension == "log" }
+        runtimeLogRoots.flatMap { root -> [URL] in
+            guard let entries = try? FileManager.default.contentsOfDirectory(
+                at: root, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+            ) else { return [] }
+            return entries.filter { $0.lastPathComponent.hasPrefix("saman_") && $0.pathExtension == "log" }
+        }
     }
 
     private func refreshSourcesIfNeeded(force: Bool = false) {
@@ -457,12 +508,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         lastDiscoveryAt = Date()
     }
 
+    private func conversationTitles(conversationIDs: Set<String>) -> [String: String] {
+        var unresolved = conversationIDs
+        var result: [String: String] = [:]
+        for product in products {
+            guard !unresolved.isEmpty else { break }
+            let found = conversationTitleReader.titles(
+                conversationIDs: unresolved,
+                doubaoDataRoot: product.dataRoot
+            )
+            result.merge(found) { current, _ in current }
+            unresolved.subtract(found.keys)
+        }
+        return result
+    }
+
+    private func conversationTitle(conversationID: String) -> String? {
+        conversationTitles(conversationIDs: [conversationID])[conversationID]
+    }
+
+    private func indexedDBFiles() -> [URL] {
+        products.flatMap { indexedDBInteractionReader.databaseFiles(doubaoDataRoot: $0.dataRoot) }
+    }
+
     private func initializeExistingSources() {
         refreshSourcesIfNeeded(force: true)
         var changed = false
-        let discoveredTitles = conversationTitleReader.titles(
-            conversationIDs: Set(watchesByPath.values.map(\.conversationID)),
-            doubaoDataRoot: doubaoDataRoot
+        let discoveredTitles = conversationTitles(
+            conversationIDs: Set(watchesByPath.values.map(\.conversationID))
         )
         for watch in watchesByPath.values {
             let key = watch.trajectoryURL.path
@@ -483,7 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 changed = true
             }
         }
-        let indexedDBLogs = indexedDBInteractionReader.databaseFiles(doubaoDataRoot: doubaoDataRoot)
+        let indexedDBLogs = indexedDBFiles()
             .filter { $0.pathExtension.lowercased() == "log" }
         for fileURL in indexedDBLogs {
             if persistedState.indexedDBOffsets[fileURL.path] == nil, let size = fileSize(fileURL) {
@@ -529,7 +602,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func scanIndexedDBInteractions() -> Bool {
         let agentConversations = Dictionary(uniqueKeysWithValues: watchesByPath.values.map { ($0.agentID, $0.conversationID) })
         guard !agentConversations.isEmpty else { return false }
-        let files = indexedDBInteractionReader.databaseFiles(doubaoDataRoot: doubaoDataRoot)
+        let files = indexedDBFiles()
             .filter { $0.pathExtension.lowercased() == "log" }
         let livePaths = Set(files.map(\.path))
         var changed = false
@@ -826,7 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             } else {
                 oldOffset = 0
                 persistedState.trajectoryOffsets[path] = 0
-                if let title = conversationTitleReader.title(conversationID: watch.conversationID, doubaoDataRoot: doubaoDataRoot) {
+                if let title = conversationTitle(conversationID: watch.conversationID) {
                     persistedState.conversationTitles[watch.conversationID] = title
                 }
                 changed = true
@@ -842,7 +915,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let completeData = data.prefix(through: lastNewline)
             guard let chunk = String(data: completeData, encoding: .utf8) else { continue }
             persistedState.trajectoryOffsets[path] = oldOffset + UInt64(completeData.count)
-            if let title = conversationTitleReader.title(conversationID: watch.conversationID, doubaoDataRoot: doubaoDataRoot) {
+            if let title = conversationTitle(conversationID: watch.conversationID) {
                 persistedState.conversationTitles[watch.conversationID] = title
             }
             changed = true
@@ -1004,7 +1077,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func emitEvent(type: String, eventID: String, conversationID: String, source: String, terminalRunID: String?) {
         let title: String
-        if let currentTitle = conversationTitleReader.title(conversationID: conversationID, doubaoDataRoot: doubaoDataRoot) {
+        if let currentTitle = conversationTitle(conversationID: conversationID) {
             title = currentTitle
             persistedState.conversationTitles[conversationID] = currentTitle
         } else {
@@ -1018,7 +1091,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             persistedState.processedEvents.removeValue(forKey: eventID)
             return
         }
-        postNotification(identifier: notificationIdentifier(eventID: eventID, conversationID: conversationID), title: title, body: body) { [weak self] success in
+        postNotification(
+            identifier: notificationIdentifier(eventID: eventID, conversationID: conversationID),
+            title: title,
+            body: body,
+            targetBundleID: watchesByPath.values.first(where: { $0.conversationID == conversationID })?.productBundleID
+        ) { [weak self] success in
             guard let self, !success else { return }
             self.persistedState.processedEvents.removeValue(forKey: eventID)
             _ = self.saveState()
@@ -1110,7 +1188,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func postNotification(identifier: String, title: String, body: String, completion: @escaping (Bool) -> Void) {
+    private func postNotification(
+        identifier: String,
+        title: String,
+        body: String,
+        targetBundleID: String? = nil,
+        completion: @escaping (Bool) -> Void
+    ) {
         if notificationsDisabled {
             NSLog("NOTIFICATION_SUPPRESSED id=%@ title=%@ body=%@", identifier, title, body)
             completion(true)
@@ -1120,8 +1204,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         content.title = title
         content.body = body
         content.sound = .default
-        // 受控 action 标记：didReceive 只处理带该标记的通知，并据此激活豆包主应用。
-        content.userInfo = [Self.actionMarkerKey: Self.actionMarkerValue]
+        // 受控 action 标记；如已知会话来源，则一并携带白名单内的主应用 Bundle ID。
+        var userInfo: [String: String] = [Self.actionMarkerKey: Self.actionMarkerValue]
+        if let targetBundleID,
+           (products.map(\.bundleID) + Self.targetBundleIDs).contains(targetBundleID) {
+            userInfo[Self.targetBundleUserInfoKey] = targetBundleID
+        }
+        content.userInfo = userInfo
         content.categoryIdentifier = Self.replyCategoryIdentifier
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         notificationCenter.add(request) { error in

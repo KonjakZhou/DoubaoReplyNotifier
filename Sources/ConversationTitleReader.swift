@@ -47,19 +47,26 @@ struct ConversationTitleReader {
         return result
     }
 
+    private static let chatDatabaseDirectoryNames = [
+        "chrome_doubaowork-chat_0.indexeddb.leveldb",
+        "chrome_doubao-chat_0.indexeddb.leveldb"
+    ]
+
     private func databaseFiles(profileURL: URL) -> [URL] {
-        let databaseURL = profileURL.appendingPathComponent(
-            "IndexedDB/chrome_doubao-chat_0.indexeddb.leveldb",
-            isDirectory: true
-        )
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: databaseURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
-        return entries.filter { url in
-            let ext = url.pathExtension.lowercased()
-            return ext == "ldb" || ext == "log"
+        Self.chatDatabaseDirectoryNames.flatMap { directoryName -> [URL] in
+            let databaseURL = profileURL.appendingPathComponent(
+                "IndexedDB/\(directoryName)",
+                isDirectory: true
+            )
+            guard let entries = try? fileManager.contentsOfDirectory(
+                at: databaseURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
+            return entries.filter { url in
+                let ext = url.pathExtension.lowercased()
+                return ext == "ldb" || ext == "log"
+            }
         }
     }
 

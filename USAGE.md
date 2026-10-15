@@ -1,6 +1,15 @@
-# 豆包工作原生任务通知器 4.6.1
+# 豆包工作原生任务通知器 4.7.0
 
-这是一个独立的 macOS 菜单栏应用。它监听豆包工作写入本机的原生运行信号，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver 或辅助功能树；权限审阅通过豆包工作原生日志中的审阅页面生命周期识别，不操作页面。
+这是一个独立的 macOS 菜单栏应用。它优先监听“豆包工作”写入本机的原生运行信号，同时保留旧“豆包”客户端兼容，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver 或辅助功能树；权限审阅通过客户端原生日志中的审阅页面生命周期识别，不操作页面。
+
+## 4.7.0 豆包工作客户端适配
+
+- 新增 `~/Library/Application Support/DoubaoWork` 原生数据根扫描；
+- 新增 `.doubaowork/agent_mode/workspace/.sessions` Agent workspace 发现；
+- 新增 `chrome_doubaowork-chat_0.indexeddb.leveldb` 标题与结构化交互读取；
+- 同时扫描豆包工作与旧豆包 Saman 日志、trajectory 和 IndexedDB，旧客户端继续兼容；
+- 每条通知携带所属客户端的主 Bundle ID，点击豆包工作通知只激活 `com.work.pc.doubao`；Browser/Helper 仍被显式拒绝；
+- App 图标改用已安装豆包工作的官方图标为基础，并保留右下角红色铃铛通知标识。
 
 ## 4.6.1 完成状态收敛修复
 
@@ -102,6 +111,7 @@ presentation_sync_*
 
 
 ```
+~/Library/Application Support/DoubaoWork/sdk_storage/log/saman_*.log
 ~/Library/Application Support/Doubao/sdk_storage/log/saman_*.log
 ```
 
@@ -123,6 +133,10 @@ Unregister blocker       → blocker 结束
 
 
 ```
+~/Library/Application Support/DoubaoWork/<Profile>/.doubaowork/
+  agent_mode/workspace/.sessions/<conversation_id>/
+  agents/<main-agent>/system/trajectory.jsonl
+
 ~/Library/Application Support/Doubao/<Profile>/.doubao/
   agent_mode/workspace/.sessions/<conversation_id>/
   agents/<main-agent>/system/trajectory.jsonl
@@ -138,15 +152,15 @@ Unregister blocker       → blocker 结束
 
 
 
-1. 从 Git 仓库 clone 或下载源码。
+1. 解压完整分发包。
 
 2. 双击 `Install.command`，或在终端执行 `./install.sh`。
 
-3. 安装脚本会先在临时目录从源码编译并验证签名，成功后才替换旧版本。
+3. 完整分发包内含已签名的 arm64 + x86_64 通用 App，安装器会先验证版本、架构和签名，再替换旧版本；接收者不需要安装开发工具。
 
-4. 首次运行时允许 “豆包回复通知” 发送通知。
+4. 若使用不含预编译 App 的源码仓库，安装器会改为本机编译，此时需要 macOS 13 或以上及 Apple Command Line Tools。
 
-源码安装需要 macOS 13 或以上及 Apple Command Line Tools；脚本找不到 Swift 编译器时会提示执行 `xcode-select --install`。安装位置：
+5. 首次运行时允许“豆包回复通知”发送通知。
 
 
 

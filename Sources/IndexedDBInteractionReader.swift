@@ -12,6 +12,11 @@ struct IndexedDBInteractionReader {
 
     init(fileManager: FileManager = .default) { self.fileManager = fileManager }
 
+    private static let chatDatabaseDirectoryNames = [
+        "chrome_doubaowork-chat_0.indexeddb.leveldb",
+        "chrome_doubao-chat_0.indexeddb.leveldb"
+    ]
+
     func databaseFiles(doubaoDataRoot: URL) -> [URL] {
         guard let profiles = try? fileManager.contentsOfDirectory(
             at: doubaoDataRoot, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
@@ -19,15 +24,17 @@ struct IndexedDBInteractionReader {
         return profiles
             .filter { $0.lastPathComponent == "Default" || $0.lastPathComponent.hasPrefix("Profile ") }
             .flatMap { profileURL -> [URL] in
-                let databaseURL = profileURL.appendingPathComponent(
-                    "IndexedDB/chrome_doubao-chat_0.indexeddb.leveldb", isDirectory: true
-                )
-                guard let entries = try? fileManager.contentsOfDirectory(
-                    at: databaseURL,
-                    includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
-                    options: [.skipsHiddenFiles]
-                ) else { return [] }
-                return entries.filter { ["ldb", "log"].contains($0.pathExtension.lowercased()) }
+                Self.chatDatabaseDirectoryNames.flatMap { directoryName -> [URL] in
+                    let databaseURL = profileURL.appendingPathComponent(
+                        "IndexedDB/\(directoryName)", isDirectory: true
+                    )
+                    guard let entries = try? fileManager.contentsOfDirectory(
+                        at: databaseURL,
+                        includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey],
+                        options: [.skipsHiddenFiles]
+                    ) else { return [] }
+                    return entries.filter { ["ldb", "log"].contains($0.pathExtension.lowercased()) }
+                }
             }
     }
 
