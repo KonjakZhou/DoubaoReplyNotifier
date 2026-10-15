@@ -155,6 +155,7 @@ bash tests/test-integration.sh "<binary>"
 - 无映射真实回放中：等待 1 次、提前完成 0 次、settled 后完成 1 次。
 - 豆包工作真实路径回放：无 `- Role: main` 的 assignment 仍发现 `.doubaowork` trajectory，读取 `chrome_doubaowork-chat` 标题并完成一次通知事件。
 - 真实安装状态同时出现豆包工作 Saman 日志和 `.doubaowork` trajectory 偏移。
+- 真实双产品启动：同一 Agent ID / conversation ID 同时存在于旧豆包与豆包工作时，使用 `productBundleID|agentID|conversationID` 复合身份保留全部来源且进程不崩溃。
 - 旧回归测试全部保持通过。
 - 没有新增 Swift 编译警告。
 - Git 差异检查无空白错误。

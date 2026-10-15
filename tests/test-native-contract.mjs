@@ -22,6 +22,7 @@ const mustContain = [
   ['indexeddb tool-call structure', /tool_call/],
   ['indexeddb full WAL write batch parser', /logicalRecords\(inWAL:/],
   ['indexeddb structured conversation id', /local_conversation_id/],
+  ['cross-product agent identity key', /indexedDBAgentConversations\(\)[\s\S]*?\$0\.productBundleID[\s\S]*?\|[\s\S]*?\$0\.agentID[\s\S]*?\|[\s\S]*?\$0\.conversationID/],
   ['indexeddb cross-source registration', /source: "indexeddb:\\?\(event\.kind\)"/],
   ['indexeddb known interaction baseline', /indexedDBKnownInteractions/],
   ['explicit interaction signal', /interaction\.ask/],

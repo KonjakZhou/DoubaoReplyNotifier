@@ -531,6 +531,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         products.flatMap { indexedDBInteractionReader.databaseFiles(doubaoDataRoot: $0.dataRoot) }
     }
 
+    private func indexedDBAgentConversations() -> [String: String] {
+        Dictionary(uniqueKeysWithValues: watchesByPath.values.map {
+            ("\($0.productBundleID)|\($0.agentID)|\($0.conversationID)", $0.conversationID)
+        })
+    }
+
     private func initializeExistingSources() {
         refreshSourcesIfNeeded(force: true)
         var changed = false
@@ -561,7 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for fileURL in indexedDBLogs {
             if persistedState.indexedDBOffsets[fileURL.path] == nil, let size = fileSize(fileURL) {
                 if let data = readRange(fileURL, offset: 0, length: size) {
-                    for event in IndexedDBInteractionReader.waitingEvents(inWAL: data, agentConversations: Dictionary(uniqueKeysWithValues: watchesByPath.values.map { ($0.agentID, $0.conversationID) })) {
+                    for event in IndexedDBInteractionReader.waitingEvents(inWAL: data, agentConversations: indexedDBAgentConversations()) {
                         persistedState.indexedDBKnownInteractions["\(event.conversationID)|\(event.interactionID)"] = event.kind
                     }
                 }
@@ -600,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func scanIndexedDBInteractions() -> Bool {
-        let agentConversations = Dictionary(uniqueKeysWithValues: watchesByPath.values.map { ($0.agentID, $0.conversationID) })
+        let agentConversations = indexedDBAgentConversations()
         guard !agentConversations.isEmpty else { return false }
         let files = indexedDBFiles()
             .filter { $0.pathExtension.lowercased() == "log" }
