@@ -28,7 +28,11 @@ def varint(n):
         b=n & 0x7f; n >>= 7
         out.append(b | (0x80 if n else 0))
         if not n: return bytes(out)
-path.write_bytes(b'conversation-list-data-overall-v2-c_id'+cid.encode()+b'-type-creator-name'+bytes([0x63])+varint(len(payload))+payload+b'-image_thumb-suffix')
+def s(text):
+    p=text.encode('utf-16le'); return b'c'+varint(len(p))+p
+value=b'\xff\x0fo'+s('schema')+s('conversation-list-data-overall-v2')+s('data')+b'o'+s('conversation_id')+s(cid)+s('name')+s(title)+b'{\x02{\x02'
+batch=(1).to_bytes(8,'little')+(1).to_bytes(4,'little')+b'\x01\x01k'+varint(len(value))+value
+path.with_suffix('.log').write_bytes(b'\x00'*4+len(batch).to_bytes(2,'little')+b'\x01'+batch)
 PY
 DOUBAO_NOTIFIER_DATA_ROOT="$ROOT" \
 DOUBAO_NOTIFIER_WORKSPACE_DIR=".doubaowork" \

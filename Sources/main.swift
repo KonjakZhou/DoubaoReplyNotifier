@@ -5,7 +5,7 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 11
+    var version = 12
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
@@ -13,6 +13,7 @@ private struct PersistedNotifierState: Codable {
     var indexedDBKnownInteractions: [String: String] = [:]
     var permissionReviewToolIDs: [String: TimeInterval] = [:]
     var conversationTitles: [String: String] = [:]
+    var conversationProducts: [String: String] = [:]
     var activeRunIDs: [String: String] = [:]
     var activeInterceptors: [String: [String: String]] = [:]
     var awaitingActivityRuns: [String: String] = [:]
@@ -27,7 +28,7 @@ private struct PersistedNotifierState: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, permissionReviewToolIDs, conversationTitles
-        case activeRunIDs, activeInterceptors, awaitingActivityRuns, pendingInteractions, terminalRuns, resolverState
+        case activeRunIDs, activeInterceptors, awaitingActivityRuns, pendingInteractions, terminalRuns, resolverState, conversationProducts
         case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
     }
 
@@ -36,13 +37,14 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 11
+        version = 12
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
         runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
         indexedDBOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .indexedDBOffsets) ?? [:]
         indexedDBKnownInteractions = try values.decodeIfPresent([String: String].self, forKey: .indexedDBKnownInteractions) ?? [:]
         permissionReviewToolIDs = try values.decodeIfPresent([String: TimeInterval].self, forKey: .permissionReviewToolIDs) ?? [:]
+        conversationProducts = try values.decodeIfPresent([String: String].self, forKey: .conversationProducts) ?? [:]
         conversationTitles = try values.decodeIfPresent([String: String].self, forKey: .conversationTitles) ?? [:]
         activeRunIDs = try values.decodeIfPresent([String: String].self, forKey: .activeRunIDs) ?? [:]
         activeInterceptors = try values.decodeIfPresent([String: [String: String]].self, forKey: .activeInterceptors) ?? [:]
@@ -56,6 +58,10 @@ private struct PersistedNotifierState: Codable {
         lastEventID = try values.decodeIfPresent(String.self, forKey: .lastEventID) ?? ""
         lastEventAt = try values.decodeIfPresent(String.self, forKey: .lastEventAt) ?? ""
         terminalRuns = terminalRuns.filter { $0.value != "waiting_user" }
+        if sourceVersion < 12 {
+            conversationTitles.removeAll()
+            conversationTitle = ""
+        }
         if sourceVersion < 6 {
             runtimeLogOffsets.removeAll()
             activeRunIDs.removeAll()
@@ -251,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         configureMenu()
         if environment["DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM"] != "1" { registerLoginItem() }
         initializeExistingSources()
-        scanTimer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in self?.scanSources() }
+        scanTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.scanSources() }
         if let scanTimer { RunLoop.current.add(scanTimer, forMode: .common) }
         scanSources()
     }
@@ -291,7 +297,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case UNNotificationDefaultActionIdentifier, Self.activateActionIdentifier:
             // 默认点击（通知主体）或显式“打开豆包”按钮 → 激活/启动豆包主应用。
             NSLog("RESPONSE_ACCEPTED reason=activate id=%@ action=%@", request.identifier, actionIdentifier)
-            activateDoubaoApp(preferredBundleID: userInfo[Self.targetBundleUserInfoKey] as? String, completion: completionHandler)
+            DispatchQueue.main.async {
+                self.activateDoubaoApp(preferredBundleID: userInfo[Self.targetBundleUserInfoKey] as? String, completion: completionHandler)
+            }
         case UNNotificationDismissActionIdentifier:
             // 划掉/关闭：不激活，仅结束。
             NSLog("RESPONSE_IGNORED reason=dismiss id=%@ action=%@", request.identifier, actionIdentifier)
@@ -323,11 +331,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             orderedBundleIDs.removeAll(where: { $0 == safePreferredBundleID })
             orderedBundleIDs.insert(safePreferredBundleID, at: 0)
         }
-        let targetBundleID = safePreferredBundleID
-            ?? orderedBundleIDs.first(where: { runningBundleIDs.contains($0) })
-            ?? orderedBundleIDs.first(where: { workspace.urlForApplication(withBundleIdentifier: $0) != nil })
-        guard let targetBundleID,
-              let appURL = workspace.urlForApplication(withBundleIdentifier: targetBundleID) else {
+        if safePreferredBundleID == nil {
+            orderedBundleIDs.sort { left, right in
+                let l = runningBundleIDs.contains(left), r = runningBundleIDs.contains(right)
+                return l != r ? l : (Self.targetBundleIDs.firstIndex(of: left) ?? 99) < (Self.targetBundleIDs.firstIndex(of: right) ?? 99)
+            }
+        }
+        // Locate the exact main app by running bundle URL first, then Launch Services,
+        // then conventional installation paths. A missing legacy target may fall back to Work.
+        var located: (String, URL)?
+        for id in orderedBundleIDs {
+            let runningURL = workspace.runningApplications.first(where: { $0.bundleIdentifier == id })?.bundleURL
+            let fileName = id == "com.work.pc.doubao" ? "DoubaoWork.app" : "Doubao.app"
+            let conventional = [URL(fileURLWithPath: "/Applications/\(fileName)"),
+                                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications/\(fileName)")]
+            let candidates = [runningURL, workspace.urlForApplication(withBundleIdentifier: id)].compactMap { $0 } + conventional
+            if let url = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) && Bundle(url: $0)?.bundleIdentifier == id }) {
+                located = (id, url); break
+            }
+        }
+        guard let (targetBundleID, appURL) = located else {
             recordActivationError(
                 stage: "locate",
                 reason: "bundle_id_not_found",
@@ -371,9 +394,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         if let running = workspace.runningApplications.first(where: { $0.bundleIdentifier == targetBundleID }) {
             NSLog("ACTIVATE_EXISTING pid=%d bundleID=%@", running.processIdentifier, targetBundleID)
-            if #unavailable(macOS 14.0) {
-                running.activate(options: [.activateIgnoringOtherApps])
-            }
+            if #available(macOS 14.0, *) { running.activate(options: []) }
+            else { running.activate(options: [.activateIgnoringOtherApps]) }
         }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
@@ -387,7 +409,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 )
                 NSLog("LAUNCH_FAILED bundleID=%@ error=%@", resolvedID, error.localizedDescription)
             } else {
-                NSLog("LAUNCH_SUCCEEDED bundleID=%@ pid=%d", resolvedID, runningApp?.processIdentifier ?? -1)
+                DispatchQueue.main.async {
+                    if #available(macOS 14.0, *) { runningApp?.activate(options: []) }
+                    else { runningApp?.activate(options: [.activateIgnoringOtherApps]) }
+                    NSLog("LAUNCH_SUCCEEDED bundleID=%@ pid=%d", resolvedID, runningApp?.processIdentifier ?? -1)
+                }
             }
             completion()
         }
@@ -524,7 +550,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func conversationTitle(conversationID: String) -> String? {
-        conversationTitles(conversationIDs: [conversationID])[conversationID]
+        if let bundleID = persistedState.conversationProducts[conversationID],
+           let product = products.first(where: { $0.bundleID == bundleID }) {
+            return conversationTitleReader.title(conversationID: conversationID, doubaoDataRoot: product.dataRoot)
+        }
+        return conversationTitles(conversationIDs: [conversationID])[conversationID]
+    }
+
+    private func orderedRuntimeLogs() -> [URL] {
+        runtimeLogsByPath.values.sorted { left, right in
+            let l = products.firstIndex(where: { left.path.hasPrefix($0.dataRoot.path + "/") }) ?? 99
+            let r = products.firstIndex(where: { right.path.hasPrefix($0.dataRoot.path + "/") }) ?? 99
+            return l != r ? l < r : left.path < right.path
+        }
+    }
+
+    private func sourceProduct(_ url: URL) -> DoubaoProduct? {
+        products.first { url.path.hasPrefix($0.dataRoot.path + "/") }
+    }
+
+    private func bindConversation(_ conversationID: String, productBundleID: String) {
+        guard persistedState.conversationProducts[conversationID] != productBundleID else { return }
+        persistedState.conversationProducts[conversationID] = productBundleID
+        persistedState.conversationTitles.removeValue(forKey: conversationID)
+        NSLog("CONVERSATION_PRODUCT_BOUND conversation=%@ bundleID=%@", conversationID, productBundleID)
+    }
+
+    private func notificationTarget(conversationID: String) -> String? {
+        if let known = persistedState.conversationProducts[conversationID] { return known }
+        let candidates = Set(watchesByPath.values.filter { $0.conversationID == conversationID }.map(\.productBundleID))
+        return products.first(where: { candidates.contains($0.bundleID) })?.bundleID
     }
 
     private func indexedDBFiles() -> [URL] {
@@ -555,7 +610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 changed = true
             }
         }
-        for logURL in runtimeLogsByPath.values.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+        for logURL in orderedRuntimeLogs() {
             if persistedState.runtimeLogOffsets[logURL.path] == nil, let size = fileSize(logURL) {
                 rebuildActiveRuntimeState(from: logURL, size: size)
                 persistedState.runtimeLogOffsets[logURL.path] = size
@@ -592,7 +647,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             aligned = Substring(text)
         }
         for line in aligned.split(separator: "\n", omittingEmptySubsequences: true) {
-            processRuntimeLogLine(String(line), scheduleTerminals: false)
+            processRuntimeLogLine(String(line), scheduleTerminals: false, productBundleID: sourceProduct(logURL)?.bundleID)
         }
     }
 
@@ -668,7 +723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func scanRuntimeLogs() -> Bool {
         var changed = false
-        for logURL in runtimeLogsByPath.values.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+        for logURL in orderedRuntimeLogs() {
             let path = logURL.path
             guard let size = fileSize(logURL) else { continue }
             let oldOffset: UInt64
@@ -692,13 +747,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             persistedState.runtimeLogOffsets[path] = oldOffset + UInt64(completeData.count)
             changed = true
             for line in chunk.split(separator: "\n", omittingEmptySubsequences: true) {
-                processRuntimeLogLine(String(line), scheduleTerminals: true)
+                processRuntimeLogLine(String(line), scheduleTerminals: true, productBundleID: sourceProduct(logURL)?.bundleID)
             }
         }
         return changed
     }
 
-    private func processRuntimeLogLine(_ line: String, scheduleTerminals: Bool) {
+    private func processRuntimeLogLine(_ line: String, scheduleTerminals: Bool, productBundleID: String? = nil) {
+        if let productBundleID {
+            let cid = firstMatch(sandboxConversationRegex, line)?.first
+                ?? firstMatch(registerRegex, line)?[1]
+                ?? firstMatch(unregisterRegex, line)?[1]
+                ?? PermissionReviewSource.reviewPresented(in: line)?.conversationID
+                ?? PermissionReviewSource.toolStarted(in: line)?.conversationID
+                ?? firstMatch(nativeWaitingReceivedRegex, line).flatMap { eventResolver.state.sandboxConversations[$0[1]] }
+            if let cid, scheduleTerminals || persistedState.conversationProducts[cid] == nil {
+                bindConversation(cid, productBundleID: productBundleID)
+            }
+        }
         if let match = firstMatch(sandboxConversationRegex, line), match.count == 2 {
             let events = eventResolver.recordSandboxMapping(
                 sandboxID: match[1],
@@ -897,6 +963,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func scanTrajectories() -> Bool {
         var changed = false
         for watch in watchesByPath.values {
+            if let bound = persistedState.conversationProducts[watch.conversationID], bound != watch.productBundleID { continue }
             let path = watch.trajectoryURL.path
             guard let size = fileSize(watch.trajectoryURL) else { continue }
             let oldOffset: UInt64
@@ -925,6 +992,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 persistedState.conversationTitles[watch.conversationID] = title
             }
             changed = true
+            let knownProduct = persistedState.conversationProducts[watch.conversationID]
+            if knownProduct == nil { bindConversation(watch.conversationID, productBundleID: watch.productBundleID) }
+            if knownProduct != nil && knownProduct != watch.productBundleID { continue }
             processTrajectory(chunk: chunk, watch: watch)
         }
         return changed
@@ -978,7 +1048,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard var interactions = persistedState.pendingInteractions[conversationID] else { return false }
         let reviewIDs = interactions.filter { $0.value.hasPrefix("permission_review.") }.map(\.key)
         guard !reviewIDs.isEmpty else { return false }
-        for reviewID in reviewIDs { interactions.removeValue(forKey: reviewID) }
+        for reviewID in reviewIDs {
+            interactions.removeValue(forKey: reviewID)
+            withdrawWaitingNotification(conversationID: conversationID, interactionID: reviewID)
+        }
         persistedState.pendingInteractions[conversationID] = interactions
         NSLog("PERMISSION_REVIEWS_RESOLVED conversation=%@ count=%d", conversationID, reviewIDs.count)
         reevaluateCompletion(conversationID: conversationID)
@@ -997,8 +1070,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func resolveWaitingInteraction(conversationID: String, interactionID: String) {
         guard var interactions = persistedState.pendingInteractions[conversationID],
               interactions.removeValue(forKey: interactionID) != nil else { return }
+        withdrawWaitingNotification(conversationID: conversationID, interactionID: interactionID)
         persistedState.pendingInteractions[conversationID] = interactions
         reevaluateCompletion(conversationID: conversationID)
+    }
+
+    private func withdrawWaitingNotification(conversationID: String, interactionID: String) {
+        let eventID = "\(conversationID)|waiting_user|\(sha256(interactionID))"
+        let identifier = notificationIdentifier(eventID: eventID, conversationID: conversationID)
+        notificationCenter.removePendingNotificationRequests(withIdentifiers: [identifier])
+        notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
+        NSLog("WAITING_NOTIFICATION_WITHDRAWN id=%@", identifier)
     }
 
     private func registerWaitingInteraction(
@@ -1101,9 +1183,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             identifier: notificationIdentifier(eventID: eventID, conversationID: conversationID),
             title: title,
             body: body,
-            targetBundleID: watchesByPath.values.first(where: { $0.conversationID == conversationID })?.productBundleID
+            targetBundleID: notificationTarget(conversationID: conversationID)
         ) { [weak self] success in
-            guard let self, !success else { return }
+            guard let self else { return }
+            if success {
+                if type == "waiting_user",
+                   !(self.persistedState.pendingInteractions[conversationID] ?? [:]).keys.contains(where: {
+                       "\(conversationID)|waiting_user|\(self.sha256($0))" == eventID
+                   }) {
+                    let identifier = self.notificationIdentifier(eventID: eventID, conversationID: conversationID)
+                    self.notificationCenter.removePendingNotificationRequests(withIdentifiers: [identifier])
+                    self.notificationCenter.removeDeliveredNotifications(withIdentifiers: [identifier])
+                }
+                return
+            }
             self.persistedState.processedEvents.removeValue(forKey: eventID)
             _ = self.saveState()
         }
@@ -1210,6 +1303,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         content.title = title
         content.body = body
         content.sound = .default
+        if body == "等待你确认或提供信息" { content.interruptionLevel = .timeSensitive }
         // 受控 action 标记；如已知会话来源，则一并携带白名单内的主应用 Bundle ID。
         var userInfo: [String: String] = [Self.actionMarkerKey: Self.actionMarkerValue]
         if let targetBundleID,
