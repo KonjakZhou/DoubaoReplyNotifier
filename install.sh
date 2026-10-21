@@ -14,8 +14,8 @@
 # moved or removed by install. It persists across upgrades.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-VERSION="4.7.5"
-BUILD="19"
+VERSION="4.7.6"
+BUILD="20"
 BUNDLE_ID="com.local.doubao-reply-notifier"
 AGENT_LABEL="com.local.doubao-reply-notifier.agent"
 APP_NAME="Doubao Reply Notifier.app"
@@ -281,7 +281,7 @@ else
   /bin/mkdir -p "$STAGED_MACOS" "$STAGED_RESOURCES"
   "$SWIFTC" -O -sdk "$SDKROOT" -target "${HOST_ARCH}-apple-macosx13.0" \
     -framework AppKit -framework UserNotifications -framework CryptoKit -framework ServiceManagement \
-    "$ROOT/Sources/EventArchitecture.swift" "$ROOT/Sources/PermissionReviewSource.swift" \
+    "$ROOT/Sources/EventArchitecture.swift" "$ROOT/Sources/NativeRoundSource.swift" "$ROOT/Sources/PermissionReviewSource.swift" \
     "$ROOT/Sources/ConversationTitleReader.swift" "$ROOT/Sources/IndexedDBInteractionReader.swift" \
     "$ROOT/Sources/main.swift" -o "$STAGED_MACOS/$BIN_NAME"
   /bin/cp "$ROOT/assets/AppIcon.icns" "$STAGED_RESOURCES/AppIcon.icns"

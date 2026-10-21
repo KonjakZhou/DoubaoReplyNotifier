@@ -6,7 +6,9 @@ import UserNotifications
 
 private struct PersistedNotifierState: Codable {
     var quarantinedInteractions: [String: [String: String]] = [:]
-    var version = 13
+    var nativeRounds = NativeRoundState()
+    var waitingOwnership: [String: [String: WaitingOwnership]] = [:]
+    var version = 14
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
@@ -28,7 +30,7 @@ private struct PersistedNotifierState: Codable {
     var lastEventAt = ""
 
     private enum CodingKeys: String, CodingKey {
-        case version, quarantinedInteractions, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, permissionReviewToolIDs, conversationTitles
+        case version, nativeRounds, waitingOwnership, quarantinedInteractions, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, permissionReviewToolIDs, conversationTitles
         case activeRunIDs, activeInterceptors, awaitingActivityRuns, pendingInteractions, terminalRuns, resolverState, conversationProducts
         case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
     }
@@ -38,7 +40,9 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 13
+        version = 14
+        nativeRounds = try values.decodeIfPresent(NativeRoundState.self, forKey: .nativeRounds) ?? NativeRoundState()
+        waitingOwnership = try values.decodeIfPresent([String: [String: WaitingOwnership]].self, forKey: .waitingOwnership) ?? [:]
         quarantinedInteractions = try values.decodeIfPresent([String: [String: String]].self, forKey: .quarantinedInteractions) ?? [:]
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
@@ -129,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var runtimeLogsByPath: [String: URL] = [:]
     private var lastDiscoveryAt = Date.distantPast
     private var pendingCompletions: [String: (runID: String, timer: Timer)] = [:]
+    private var unresolvedLocalLines: [(line: String, product: String, live: Bool)] = []
     private var recentRuntimeContext: [String] = []
     private var pageSyncInterceptors = Set<String>()
     private var eventResolver = EventResolver()
@@ -207,10 +212,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         "interaction.authorize_folder", "interaction_authorize_folder"
     ]
     private let registerRegex = try! NSRegularExpression(
-        pattern: #"Register added blocker\. scope_id=local-task-conversation, intercept_id=([^,\s]+):([0-9]+),.*sequence=([0-9]+)"#
+        pattern: #"Register added blocker\. scope_id=local-task-conversation, intercept_id=([^,\s]+):([0-9]+|local_[0-9]+),.*sequence=([0-9]+)"#
     )
     private let unregisterRegex = try! NSRegularExpression(
-        pattern: #"Unregister blocker\. scope_id=local-task-conversation, intercept_id=([^,\s]+):([0-9]+),"#
+        pattern: #"Unregister blocker\. scope_id=local-task-conversation, intercept_id=([^,\s]+):([0-9]+|local_[0-9]+),"#
     )
     private let sandboxConversationRegex = try! NSRegularExpression(
         pattern: #"\"conversation_id\":\"([0-9]+)\".*?\"sandbox_id\":\"(sandbox-[0-9a-f-]+)\""#
@@ -664,13 +669,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         var resolved = Set<String>()
+        var called = Set<String>()
         for watch in watchesByPath.values where persistedState.pendingInteractions[watch.conversationID] != nil {
             guard let text = try? String(contentsOf: watch.trajectoryURL, encoding: .utf8) else { continue }
             for line in text.split(separator: "\n") {
                 guard let data = String(line).data(using: .utf8),
-                      let record = try? JSONDecoder().decode(TrajectoryRecord.self, from: data),
-                      record.role == "tool", let id = record.tool_call_id else { continue }
-                resolved.insert("\(watch.conversationID)|\(id)")
+                      let record = try? JSONDecoder().decode(TrajectoryRecord.self, from: data) else { continue }
+                if record.role == "assistant" {
+                    for call in record.tool_calls ?? [] where call.function?.name.map(waitingTools.contains) == true {
+                        if let id = call.id { called.insert("\(watch.conversationID)|\(id)") }
+                    }
+                }
+                if record.role == "tool", let id = record.tool_call_id { resolved.insert("\(watch.conversationID)|\(id)") }
             }
         }
         for (cid, pending) in persistedState.pendingInteractions {
@@ -680,6 +690,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 if resolved.contains(key) {
                     retained.removeValue(forKey: id)
                     NSLog("PERSISTED_WAIT_RESOLVED conversationHash=%@", String(sha256(cid).prefix(12)))
+                } else if !tool.hasPrefix("indexeddb."),
+                          persistedState.waitingOwnership[cid]?[id] == nil,
+                          !called.contains(key), eventResolver.state.pendingNativeInteractions[id] == nil {
+                    quarantineWaiting(conversationID: cid, interactionID: id, tool: tool)
+                    retained.removeValue(forKey: id)
                 } else if tool.hasPrefix("indexeddb."), !validated.contains(key) {
                     // Old heuristic entries have no provenance. Preserve them for audit,
                     // but do not let unverified bytes permanently block new rounds.
@@ -783,6 +798,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func scanRuntimeLogs() -> Bool {
         var changed = false
+        var batch: [(line: String, product: String)] = []
         for logURL in orderedRuntimeLogs() {
             let path = logURL.path
             guard let size = fileSize(logURL) else { continue }
@@ -807,14 +823,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             persistedState.runtimeLogOffsets[path] = oldOffset + UInt64(completeData.count)
             changed = true
             for line in chunk.split(separator: "\n", omittingEmptySubsequences: true) {
-                processRuntimeLogLine(String(line), scheduleTerminals: true, productBundleID: sourceProduct(logURL)?.bundleID)
+                let text = String(line)
+                if text.contains("[logifier-report]:") || text.contains("chat_page_navigate_event") ||
+                   text.contains("blocker") || text.contains("presentation_sync_") ||
+                   text.contains("setShortcutIntercept") || text.contains("[agent-task]") ||
+                   text.contains("conversation_id") || text.contains("agent-confirm_") {
+                    batch.append((text, sourceProduct(logURL)?.bundleID ?? products[0].bundleID))
+                }
             }
+        }
+        // Merge native streams before applying state: lifecycle and blocker records
+        // are in separate files and must not be processed in filename order.
+        let ordered = batch.enumerated().sorted {
+            let a = NativeRoundSource.order(in: $0.element.line), b = NativeRoundSource.order(in: $1.element.line)
+            return a == b ? $0.offset < $1.offset : a < b
+        }
+        for item in ordered {
+            processRuntimeLogLine(item.element.line, scheduleTerminals: true, productBundleID: item.element.product)
         }
         return changed
     }
 
+    private func quarantineWaiting(conversationID: String, interactionID: String, tool: String) {
+        persistedState.quarantinedInteractions[conversationID, default: [:]][interactionID] = tool
+        persistedState.pendingInteractions[conversationID]?.removeValue(forKey: interactionID)
+        persistedState.waitingOwnership[conversationID]?.removeValue(forKey: interactionID)
+        withdrawWaitingNotification(conversationID: conversationID, interactionID: interactionID)
+        NSLog("OLD_ROUND_WAIT_QUARANTINED conversationHash=%@", String(sha256(conversationID).prefix(12)))
+    }
+
+    private func beginNativeRound(_ round: NativeRound) {
+        let cid = round.conversationID
+        let key = NativeRoundSource.key(product: round.product, conversationID: cid)
+        if let known = persistedState.nativeRounds.rounds[key] {
+            if known.runID == round.runID || known.queryTimestamp >= round.queryTimestamp { return }
+        }
+        if let pending = pendingCompletions.removeValue(forKey: cid) { pending.timer.invalidate() }
+        let sameProduct = persistedState.conversationProducts[cid] == nil || persistedState.conversationProducts[cid] == round.product
+        let previous = persistedState.activeRunIDs[cid]
+        for (id, tool) in persistedState.pendingInteractions[cid] ?? [:] {
+            if let owner = persistedState.waitingOwnership[cid]?[id], owner.product == round.product,
+               owner.receivedAt * 1000 >= round.queryTimestamp - 1000,
+               !owner.runID.hasPrefix("native|") {
+                // Native blocker/toolcall may precede the structured session start.
+                persistedState.waitingOwnership[cid]?[id]?.runID = round.runID
+            } else { quarantineWaiting(conversationID: cid, interactionID: id, tool: tool) }
+        }
+        var blockers = sameProduct ? (persistedState.activeInterceptors[cid] ?? [:]) : [:]
+        for id in blockers.keys { blockers[id] = round.runID }
+        if let previous, previous.hasPrefix("native|") { blockers.removeAll() }
+        persistedState.activeInterceptors[cid] = blockers
+        persistedState.activeRunIDs[cid] = round.runID
+        persistedState.awaitingActivityRuns.removeValue(forKey: cid)
+        persistedState.nativeRounds.rounds[key] = round
+        bindConversation(cid, productBundleID: round.product)
+        NSLog("NATIVE_ROUND_STARTED conversationHash=%@", String(sha256(cid).prefix(12)))
+    }
+
+    private func nativeRound(conversationID: String) -> NativeRound? {
+        guard let product = persistedState.conversationProducts[conversationID] else { return nil }
+        return persistedState.nativeRounds.rounds[NativeRoundSource.key(product: product, conversationID: conversationID)]
+    }
+
     private func processRuntimeLogLine(_ line: String, scheduleTerminals: Bool, productBundleID: String? = nil) {
-        if let productBundleID {
+        let product = productBundleID ?? products[0].bundleID
+        if let pair = NativeRoundSource.navigationAlias(in: line) {
+            persistedState.nativeRounds.aliases[NativeRoundSource.aliasKey(product: product, line: line, localID: pair.local)] = pair.conversation
+        }
+        if let signal = NativeRoundSource.signal(in: line, product: product) {
+            if let local = signal.localID {
+                persistedState.nativeRounds.aliases[NativeRoundSource.aliasKey(product: product, line: line, localID: local)] = signal.round.conversationID
+            }
+            if !signal.isEnd { beginNativeRound(signal.round) }
+            let key = NativeRoundSource.key(product: product, conversationID: signal.round.conversationID)
+            if signal.isEnd, persistedState.nativeRounds.rounds[key]?.runID == signal.round.runID,
+               persistedState.activeRunIDs[signal.round.conversationID] == signal.round.runID {
+                persistedState.nativeRounds.rounds[key]?.ended = true
+                // Explicit successful message-session end closes only its own run.
+                persistedState.activeInterceptors[signal.round.conversationID] = [:]
+                persistedState.awaitingActivityRuns.removeValue(forKey: signal.round.conversationID)
+                if scheduleTerminals { reevaluateCompletion(conversationID: signal.round.conversationID) }
+            }
+        }
+        let backlog = unresolvedLocalLines
+        unresolvedLocalLines.removeAll(keepingCapacity: true)
+        for item in backlog { processBlockerLine(item.line, scheduleTerminals: item.live, productBundleID: item.product) }
+        processBlockerLine(line, scheduleTerminals: scheduleTerminals, productBundleID: product)
+    }
+
+    private func processBlockerLine(_ rawLine: String, scheduleTerminals: Bool, productBundleID: String) {
+        var line = rawLine
+        if let match = firstMatch(registerRegex, line) ?? firstMatch(unregisterRegex, line), match.count >= 2,
+           NativeRoundSource.temporary(match[1]) {
+            let local = match[1]
+            guard let cid = persistedState.nativeRounds.aliases[NativeRoundSource.aliasKey(product: productBundleID, line: line, localID: local)] else {
+                if unresolvedLocalLines.count < 1024 { unresolvedLocalLines.append((line, productBundleID, scheduleTerminals)) }
+                else { NSLog("UNMAPPED_LOCAL_CAPACITY_EXCEEDED") }
+                return
+            }
+            line = line.replacingOccurrences(of: ":\(local),", with: ":\(cid),")
+        }
+        let boundProduct = productBundleID
+        if let productBundleID = Optional(boundProduct) {
             let cid = firstMatch(sandboxConversationRegex, line)?.first
                 ?? firstMatch(registerRegex, line)?[1]
                 ?? firstMatch(unregisterRegex, line)?[1]
@@ -903,7 +1013,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             recentRuntimeContext.removeAll(keepingCapacity: true)
             let existingInterceptors = persistedState.activeInterceptors[conversationID] ?? [:]
-            let previousRun = existingInterceptors.isEmpty ? nil : persistedState.activeRunIDs[conversationID]
+            let previousRun = nativeRound(conversationID: conversationID).flatMap { $0.ended ? nil : $0.runID }
+                ?? (existingInterceptors.isEmpty ? nil : persistedState.activeRunIDs[conversationID])
             let runID = previousRun ??
                 "runtime|\(conversationID)|\(sequence)|\(sha256(line))"
             applyCanonicalEvent(CanonicalEvent(
@@ -913,7 +1024,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 runID: runID,
                 blockerID: interceptID
             ))
-            if hasNavigation { persistedState.awaitingActivityRuns[conversationID] = runID }
+            if hasNavigation && nativeRound(conversationID: conversationID) == nil { persistedState.awaitingActivityRuns[conversationID] = runID }
             return
         }
         if let match = firstMatch(unregisterRegex, line), match.count == 2 {
@@ -983,6 +1094,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func reevaluateCompletion(conversationID: String) {
+        if let round = nativeRound(conversationID: conversationID),
+           persistedState.activeRunIDs[conversationID] == round.runID, !round.ended { return }
         guard let runID = persistedState.activeRunIDs[conversationID],
               persistedState.terminalRuns[runID] == nil,
               (persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty,
@@ -1138,6 +1251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func resolveWaitingInteraction(conversationID: String, interactionID: String) {
         guard var interactions = persistedState.pendingInteractions[conversationID],
               interactions.removeValue(forKey: interactionID) != nil else { return }
+        persistedState.waitingOwnership[conversationID]?.removeValue(forKey: interactionID)
         withdrawWaitingNotification(conversationID: conversationID, interactionID: interactionID)
         persistedState.pendingInteractions[conversationID] = interactions
         reevaluateCompletion(conversationID: conversationID)
@@ -1157,6 +1271,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         waitingTool: String,
         source: String
     ) {
+        if persistedState.quarantinedInteractions[conversationID]?[interactionID] != nil { return }
+        if let round = nativeRound(conversationID: conversationID), round.ended,
+           persistedState.activeRunIDs[conversationID] == nil {
+            NSLog("ENDED_ROUND_WAIT_IGNORED conversationHash=%@", String(sha256(conversationID).prefix(12)))
+            return
+        }
+        if let owner = persistedState.waitingOwnership[conversationID]?[interactionID],
+           owner.runID != persistedState.activeRunIDs[conversationID] {
+            quarantineWaiting(conversationID: conversationID, interactionID: interactionID, tool: waitingTool)
+            return
+        }
         let eventID = "\(conversationID)|waiting_user|\(sha256(interactionID))"
         if persistedState.processedEvents[eventID] != nil { return }
 
@@ -1181,6 +1306,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSLog("STALE_WAITING_IGNORED conversation=%@ interaction=%@ source=%@", conversationID, interactionID, source)
             return
         }
+        persistedState.waitingOwnership[conversationID, default: [:]][interactionID] = WaitingOwnership(
+            runID: runID, product: persistedState.conversationProducts[conversationID] ?? products[0].bundleID,
+            receivedAt: Date().timeIntervalSince1970, source: source)
         persistedState.awaitingActivityRuns.removeValue(forKey: conversationID)
         var interactions = persistedState.pendingInteractions[conversationID] ?? [:]
         if isPermissionReview {
