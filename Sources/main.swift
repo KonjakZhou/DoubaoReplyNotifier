@@ -5,7 +5,8 @@ import ServiceManagement
 import UserNotifications
 
 private struct PersistedNotifierState: Codable {
-    var version = 12
+    var quarantinedInteractions: [String: [String: String]] = [:]
+    var version = 13
     var processedEvents: [String: String] = [:]
     var trajectoryOffsets: [String: UInt64] = [:]
     var runtimeLogOffsets: [String: UInt64] = [:]
@@ -27,7 +28,7 @@ private struct PersistedNotifierState: Codable {
     var lastEventAt = ""
 
     private enum CodingKeys: String, CodingKey {
-        case version, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, permissionReviewToolIDs, conversationTitles
+        case version, quarantinedInteractions, processedEvents, trajectoryOffsets, runtimeLogOffsets, indexedDBOffsets, indexedDBKnownInteractions, permissionReviewToolIDs, conversationTitles
         case activeRunIDs, activeInterceptors, awaitingActivityRuns, pendingInteractions, terminalRuns, resolverState, conversationProducts
         case lastEventSource, lastEventType, conversationTitle, lastEventID, lastEventAt
     }
@@ -37,7 +38,8 @@ private struct PersistedNotifierState: Codable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let sourceVersion = try values.decodeIfPresent(Int.self, forKey: .version) ?? 0
-        version = 12
+        version = 13
+        quarantinedInteractions = try values.decodeIfPresent([String: [String: String]].self, forKey: .quarantinedInteractions) ?? [:]
         processedEvents = try values.decodeIfPresent([String: String].self, forKey: .processedEvents) ?? [:]
         trajectoryOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .trajectoryOffsets) ?? [:]
         runtimeLogOffsets = try values.decodeIfPresent([String: UInt64].self, forKey: .runtimeLogOffsets) ?? [:]
@@ -257,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         configureMenu()
         if environment["DOUBAO_NOTIFIER_DISABLE_LOGIN_ITEM"] != "1" { registerLoginItem() }
         initializeExistingSources()
+        reconcilePersistedInteractions()
         scanTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in self?.scanSources() }
         if let scanTimer { RunLoop.current.add(scanTimer, forMode: .common) }
         scanSources()
@@ -651,6 +654,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if changed { _ = saveState() }
     }
 
+    private func reconcilePersistedInteractions() {
+        let allowed = indexedDBAgentConversations()
+        var validated = Set<String>()
+        for url in indexedDBFiles().filter({ $0.pathExtension == "log" }) {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            for event in IndexedDBInteractionReader.waitingEvents(inWAL: data, agentConversations: allowed) {
+                validated.insert("\(event.conversationID)|\(event.interactionID)")
+            }
+        }
+        var resolved = Set<String>()
+        for watch in watchesByPath.values where persistedState.pendingInteractions[watch.conversationID] != nil {
+            guard let text = try? String(contentsOf: watch.trajectoryURL, encoding: .utf8) else { continue }
+            for line in text.split(separator: "\n") {
+                guard let data = String(line).data(using: .utf8),
+                      let record = try? JSONDecoder().decode(TrajectoryRecord.self, from: data),
+                      record.role == "tool", let id = record.tool_call_id else { continue }
+                resolved.insert("\(watch.conversationID)|\(id)")
+            }
+        }
+        for (cid, pending) in persistedState.pendingInteractions {
+            var retained = pending
+            for (id, tool) in pending {
+                let key = "\(cid)|\(id)"
+                if resolved.contains(key) {
+                    retained.removeValue(forKey: id)
+                    NSLog("PERSISTED_WAIT_RESOLVED conversationHash=%@", String(sha256(cid).prefix(12)))
+                } else if tool.hasPrefix("indexeddb."), !validated.contains(key) {
+                    // Old heuristic entries have no provenance. Preserve them for audit,
+                    // but do not let unverified bytes permanently block new rounds.
+                    var quarantine = persistedState.quarantinedInteractions[cid] ?? [:]
+                    quarantine[id] = tool
+                    persistedState.quarantinedInteractions[cid] = quarantine
+                    retained.removeValue(forKey: id)
+                    NSLog("UNVERIFIED_INDEXEDDB_WAIT_QUARANTINED conversationHash=%@", String(sha256(cid).prefix(12)))
+                }
+            }
+            persistedState.pendingInteractions[cid] = retained
+        }
+        _ = saveState()
+    }
+
     private func rebuildActiveRuntimeState(from logURL: URL, size: UInt64) {
         let window: UInt64 = 8 * 1024 * 1024
         let offset = size > window ? size - window : 0
@@ -848,8 +892,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let conversationID = match[1]
             let sequence = match[2]
             let context = recentRuntimeContext.joined(separator: "\n")
-            let isPageSync = context.contains("chat_page_navigate_event") &&
-                context.contains("presentation_sync_")
+            let hasNavigation = recentRuntimeContext.contains { $0.contains("chat_page_navigate_event") && $0.contains(conversationID) }
+            let isPageSync = hasNavigation && (context.contains("presentation_sync_") ||
+                context.contains("setShortcutIntercept"))
             if isPageSync {
                 pageSyncInterceptors.insert("\(conversationID)|\(interceptID)")
                 recentRuntimeContext.removeAll(keepingCapacity: true)
@@ -857,7 +902,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
             recentRuntimeContext.removeAll(keepingCapacity: true)
-            let runID = persistedState.activeRunIDs[conversationID] ??
+            let existingInterceptors = persistedState.activeInterceptors[conversationID] ?? [:]
+            let previousRun = existingInterceptors.isEmpty ? nil : persistedState.activeRunIDs[conversationID]
+            let runID = previousRun ??
                 "runtime|\(conversationID)|\(sequence)|\(sha256(line))"
             applyCanonicalEvent(CanonicalEvent(
                 kind: .runStarted,
@@ -866,6 +913,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 runID: runID,
                 blockerID: interceptID
             ))
+            if hasNavigation { persistedState.awaitingActivityRuns[conversationID] = runID }
             return
         }
         if let match = firstMatch(unregisterRegex, line), match.count == 2 {
@@ -909,7 +957,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case .runBlockerEnded:
             guard let runID = event.runID, let blockerID = event.blockerID else { return }
             var interceptors = persistedState.activeInterceptors[event.conversationID] ?? [:]
-            guard interceptors.removeValue(forKey: blockerID) != nil else { return }
+            guard interceptors[blockerID] == runID else { return }
+            interceptors.removeValue(forKey: blockerID)
             persistedState.activeInterceptors[event.conversationID] = interceptors
             guard interceptors.isEmpty, persistedState.activeRunIDs[event.conversationID] == runID else { return }
             reevaluateCompletion(conversationID: event.conversationID)
@@ -928,6 +977,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if let runID = persistedState.activeRunIDs[event.conversationID],
                persistedState.awaitingActivityRuns[event.conversationID] == runID {
                 persistedState.awaitingActivityRuns.removeValue(forKey: event.conversationID)
+                reevaluateCompletion(conversationID: event.conversationID)
             }
         }
     }
@@ -938,9 +988,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
               (persistedState.activeInterceptors[conversationID] ?? [:]).isEmpty,
               (persistedState.pendingInteractions[conversationID] ?? [:]).isEmpty,
               persistedState.awaitingActivityRuns[conversationID] == nil else {
+            NSLog("COMPLETION_HOLD conversationHash=%@ active=%d blockers=%d pending=%d awaitingActivity=%d", String(sha256(conversationID).prefix(12)), persistedState.activeRunIDs[conversationID] == nil ? 0 : 1, (persistedState.activeInterceptors[conversationID] ?? [:]).count, (persistedState.pendingInteractions[conversationID] ?? [:]).count, persistedState.awaitingActivityRuns[conversationID] == nil ? 0 : 1)
             if let pending = pendingCompletions.removeValue(forKey: conversationID) { pending.timer.invalidate() }
             return
         }
+        NSLog("COMPLETION_SCHEDULED conversationHash=%@", String(sha256(conversationID).prefix(12)))
         scheduleCompletion(conversationID: conversationID, runID: runID)
     }
 

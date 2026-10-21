@@ -76,6 +76,12 @@ struct ConversationTitleReader {
         return sanitize(title)
     }
 
+    static func serializedValue(_ data: Data) -> V8TitleValue? {
+        guard let payload = serializedPayload(data) else { return nil }
+        var decoder = V8TitleDecoder(bytes: Array(payload), cursor: 2)
+        return decoder.value()
+    }
+
     static func structuredTitles(_ data: Data) -> [String: String] {
         guard let payload = serializedPayload(data) else { return [:] }
         let bytes = Array(payload)
@@ -137,7 +143,7 @@ struct ConversationTitleReader {
     }
 }
 
-private indirect enum V8TitleValue {
+indirect enum V8TitleValue {
     case string(String), object([String: V8TitleValue]), array([V8TitleValue]), scalar
 }
 

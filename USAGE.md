@@ -1,6 +1,30 @@
-# 豆包工作原生任务通知器 4.7.2
+# 豆包工作原生任务通知器 4.7.5
 
-这是一个独立的 macOS 菜单栏应用。它优先监听“豆包工作”写入本机的原生运行信号，同时保留旧“豆包”客户端兼容，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver 或辅助功能树；权限审阅通过客户端原生日志中的审阅页面生命周期识别，不操作页面。
+## 本轮修复与验证边界
+
+- 已完成 `/Applications` 真实迁移、自启动路径更新、唯一实例与健康 PID 核验、受管服务重启验证。
+- IndexedDB 先解压并解码完整 V8 对象，再按 quick_reply_block 内同一 schema_payload 的 tool_call_id 与会话归属判定。不再以相邻文本中的 UUID 和关键词推断。
+- 升级到状态 v13：有真实 tool result 的等待按调用 ID 解除；无结构化证据的旧 indexeddb 等待保留在 quarantinedInteractions 审计区，不再永久阻断完成。其他来源的合法等待不一刀切清除。
+- 导航与快捷键拦截共置的瞬态 blocker 不建立任务；导航后仍不明确的 blocker 需当前轮次活动证据才武装完成。正常快速任务不按时长丢弃。
+- 完成守卫增加脱敏 COMPLETION_HOLD / COMPLETION_SCHEDULED 日志；修复已结束 run 被后续轮次复用的问题。
+- 新增实际 Swift 二进制隔离回归。隔离测试不等于实际客户端首次发送/横幅展示已经人工验收。
+
+
+这是一个独立的 macOS 菜单栏应用。它优先监听”豆包工作”写入本机的原生运行信号，同时保留旧”豆包”客户端兼容，在回复完成或明确等待用户操作时发送系统通知。全程不使用 DOM、CDP、Renderer 注入、MutationObserver 或辅助功能树；权限审阅通过客户端原生日志中的审阅页面生命周期识别，不操作页面。
+
+## 4.7.3 系统级安装位置迁移
+
+生产默认安装位置从 `~/Applications` 迁移到 `/Applications/Doubao Reply Notifier.app`。安装器会自动：
+
+- 检测旧 `~/Applications` 副本；
+- 先停止旧 LaunchAgent 与进程（按可执行文件绝对路径精确匹配，不使用子串匹配，避免误杀）；
+- 新 App 先 staging、校验版本/架构/签名，再复制并核验最终 `/Applications` 路径（非文件系统原子替换）；
+- 新服务健康校验通过后才删除旧 `~/Applications` 副本；任何失败都回滚，旧版仍可用；
+- 状态目录 `~/Library/Application Support/DoubaoReplyNotifier` 不迁移、不删除；
+- LaunchAgent `ProgramArguments` 指向最终 `/Applications` 可执行路径；
+- 通过 lsregister 刷新 LaunchServices 注册，并自检 mdfind 多副本歧义。
+
+环境变量 `DOUBAO_NOTIFIER_APPS_DIR` 可覆盖安装目录（测试或自定义位置）。`/Applications/Doubao.app` 与 `/Applications/DoubaoWork.app` 绝不被本安装器触碰。
 
 ## 4.7.2 压缩会话名称修复
 
@@ -184,8 +208,10 @@ Unregister blocker       → blocker 结束
 
 
 ```
-~/Applications/Doubao Reply Notifier.app
+/Applications/Doubao Reply Notifier.app
 ```
+
+（旧版安装位置为 `~/Applications/Doubao Reply Notifier.app`；4.7.3 起自动迁移，旧副本在新版验证通过后删除。）
 
 安装后会注册当前用户 LaunchAgent 登录服务，并在菜单栏显示铃铛图标。安装器会自动启动并校验就绪，菜单中可手动发送测试通知。
 
@@ -213,7 +239,7 @@ Unregister blocker       → blocker 结束
 
 
 
-* 状态格式版本 12；升级时清除旧标题缓存并保留事件账本；来自更早版本的 `indexeddb.*` 伪等待清理与 blocker 重建迁移仍保留。
+* 状态格式版本 13；保留事件账本，对历史等待进行按真实结构/工具结果的有限对账。
 
 * 运行日志、trajectory 与 WAL 使用持久化偏移。
 
@@ -241,7 +267,7 @@ node tests/test-activation-router.mjs
 node tests/test-native-contract.mjs
 swiftc tests/test-marker-bridging.swift -o /tmp/test-marker-bridging && /tmp/test-marker-bridging
 swiftc Sources/ConversationTitleReader.swift tests/test-title-reader.swift -o /tmp/test-title-reader && /tmp/test-title-reader
-swiftc Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swift -o /tmp/test-indexeddb-reader
+swiftc Sources/ConversationTitleReader.swift Sources/IndexedDBInteractionReader.swift tests/test-indexeddb-reader.swift -o /tmp/test-indexeddb-reader
 /tmp/test-indexeddb-reader tests/fixtures/real-authorize-wal.bin
 swiftc Sources/PermissionReviewSource.swift tests/test-permission-review-source.swift -o /tmp/test-permission-review-source && /tmp/test-permission-review-source
 swiftc Sources/EventArchitecture.swift tests/test-event-resolver.swift -o /tmp/test-event-resolver && /tmp/test-event-resolver

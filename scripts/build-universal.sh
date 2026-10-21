@@ -5,6 +5,9 @@ VERSION="$(/usr/bin/python3 -c 'import re,sys;print(re.search(r"VERSION=\"([^\"]
 BUILD="$(/usr/bin/python3 -c 'import re,sys;print(re.search(r"BUILD=\"([^\"]+)\"",open(sys.argv[1]).read())[1])' "$ROOT/install.sh")"
 STAGE="$(mktemp -d)"
 APP="$STAGE/Doubao Reply Notifier.app"
+# Optional $1 = output root where the finished bundle is copied. Empty = legacy
+# ROOT behavior (refuses if a prebuilt already sits in ROOT).
+OUT_DIR="${1:-}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 SDK="$(xcrun --show-sdk-path)"
 for ARCH in arm64 x86_64; do
@@ -26,9 +29,20 @@ with open(sys.argv[1],'wb') as f:
 PY
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
-if [[ -e "$ROOT/Doubao Reply Notifier.app" ]]; then
+if [[ -n "$OUT_DIR" ]]; then
+  # Safety: never delete an existing bundle at the requested output (which may
+  # be an unrelated external copy or the source prebuilt). Refuse instead.
+  if [[ -e "$OUT_DIR/Doubao Reply Notifier.app" || -L "$OUT_DIR/Doubao Reply Notifier.app" ]]; then
+    printf '%s\n' "输出目标已存在，拒绝覆盖：$OUT_DIR/Doubao Reply Notifier.app（请使用全新目录）" >&2
+    exit 1
+  fi
+  mkdir -p "$OUT_DIR"
+  cp -R "$APP" "$OUT_DIR/Doubao Reply Notifier.app"
+  printf '%s\n' "built=$OUT_DIR/Doubao Reply Notifier.app" "temporary_build=$STAGE"
+elif [[ -e "$ROOT/Doubao Reply Notifier.app" ]]; then
   printf '%s\n' '构建输出已存在，请先检查旧产物，避免覆盖。' >&2
   exit 1
+else
+  cp -R "$APP" "$ROOT/Doubao Reply Notifier.app"
+  printf '%s\n' "built=$ROOT/Doubao Reply Notifier.app" "temporary_build=$STAGE"
 fi
-cp -R "$APP" "$ROOT/Doubao Reply Notifier.app"
-printf '%s\n' "built=$ROOT/Doubao Reply Notifier.app" "temporary_build=$STAGE"

@@ -43,90 +43,48 @@ struct IndexedDBInteractionReader {
     /// a UUID-neighbourhood search, which can match user/assistant text by accident.
     static func waitingEvents(inWAL data: Data, agentConversations: [String: String]) -> [IndexedDBWaitingEvent] {
         guard !data.isEmpty, !agentConversations.isEmpty else { return [] }
-        let records = logicalRecords(inWAL: data)
-        let batches = records.compactMap(writeBatchValues)
-        if ProcessInfo.processInfo.environment["DOUBAO_INDEXEDDB_DEBUG"] == "1" {
-            fputs("indexeddb records=\(records.count) batches=\(batches.count) values=\(batches.reduce(0) { $0 + $1.count })\n", stderr)
+        let allowed = Set(agentConversations.values)
+        var output = Set<IndexedDBWaitingEvent>()
+        for record in logicalRecords(inWAL: data) {
+            for value in writeBatchValues(record) ?? [] {
+                guard let root = ConversationTitleReader.serializedValue(value) else { continue }
+                output.formUnion(structuredWaitingEvents(root: root, allowed: allowed))
+            }
         }
-        let identities = agentConversations.map {
-            (agent: Data($0.key.utf8), cid: $0.value, cidData: Data($0.value.utf8))
+        return Array(output)
+    }
+
+    static func structuredWaitingEvents(root: V8TitleValue, allowed: Set<String>) -> Set<IndexedDBWaitingEvent> {
+        // Scope ownership to a task/message object; never inherit from arbitrary text.
+        func string(_ value: V8TitleValue?) -> String? {
+            if case .string(let s)? = value { return s }; return nil
         }
         var result = Set<IndexedDBWaitingEvent>()
-
-        for values in batches {
-            for value in values {
-                let cid = structuredConversationID(in: value, identities: identities)
-                guard let cid else {
-                    if ProcessInfo.processInfo.environment["DOUBAO_INDEXEDDB_DEBUG"] == "1",
-                       value.range(of: Data("schema_payload".utf8)) != nil {
-                        fputs("indexeddb schema without structured local_conversation_id\n", stderr)
-                    }
-                    continue
+        func walk(_ node: V8TitleValue, cid: String?, inQuickReply: Bool) {
+            switch node {
+            case .object(let object):
+                var owner = string(object["local_conversation_id"]) ?? cid
+                if case .object(let extra)? = object["extra"], let id = string(extra["local_conversation_id"]) { owner = id }
+                if inQuickReply, let owner, allowed.contains(owner),
+                   let schema = string(object["schema_payload"]), let data = schema.data(using: .utf8),
+                   let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let id = payload["tool_call_id"] as? String, UUID(uuidString: id) != nil,
+                   let sandbox = payload["sandbox_id"] as? String, sandbox.hasPrefix("sandbox-") {
+                    let native: Bool
+                    if case .object(let extra)? = object["extra_params"] { native = string(extra["pc_native_may_involve"]) == "1" }
+                    else { native = false }
+                    result.insert(IndexedDBWaitingEvent(conversationID: owner, interactionID: id, kind: native ? "authorize" : "ask"))
                 }
-                let interactions = structuredInteractions(in: value)
-                if ProcessInfo.processInfo.environment["DOUBAO_INDEXEDDB_DEBUG"] == "1", !interactions.isEmpty {
-                    fputs("indexeddb cid=\(cid) interactions=\(interactions)\n", stderr)
+                for (key, value) in object {
+                    walk(value, cid: owner, inQuickReply: inQuickReply || key == "quick_reply_block")
                 }
-                for interaction in interactions {
-                    result.insert(IndexedDBWaitingEvent(
-                        conversationID: cid,
-                        interactionID: interaction.id,
-                        kind: interaction.kind
-                    ))
-                }
+            case .array(let values):
+                for value in values { walk(value, cid: cid, inQuickReply: inQuickReply) }
+            default: break
             }
         }
-        return Array(result)
-    }
-
-    private static func structuredConversationID(
-        in value: Data,
-        identities: [(agent: Data, cid: String, cidData: Data)]
-    ) -> String? {
-        let marker = Data("local_conversation_id".utf8)
-        var cursor = value.startIndex
-        while cursor < value.endIndex,
-              let markerRange = value.range(of: marker, in: cursor..<value.endIndex) {
-            let end = min(value.endIndex, markerRange.upperBound + 160)
-            for identity in identities where
-                value.range(of: identity.cidData, in: markerRange.upperBound..<end) != nil {
-                return identity.cid
-            }
-            cursor = markerRange.upperBound
-        }
-        return nil
-    }
-
-    private static func structuredInteractions(in value: Data) -> [(id: String, kind: String)] {
-        let schema = Data("schema_payload".utf8)
-        let toolCall = Data("tool_call".utf8)
-        var output: [(String, String)] = []
-        var cursor = value.startIndex
-        while cursor < value.endIndex,
-              let schemaRange = value.range(of: schema, in: cursor..<value.endIndex) {
-            let end = min(value.endIndex, schemaRange.lowerBound + 4_096)
-            guard let toolRange = value.range(of: toolCall, in: schemaRange.upperBound..<end),
-                  let (id, _) = firstUUID(in: value, range: toolRange.upperBound..<min(end, toolRange.upperBound + 768)) else {
-                cursor = schemaRange.upperBound
-                continue
-            }
-            let contextStart = max(value.startIndex, schemaRange.lowerBound - 768)
-            let context = value[contextStart..<end]
-            let kind: String?
-            if context.range(of: Data("approve".utf8)) != nil ||
-                context.range(of: Data("pc_native_may_involve".utf8)) != nil {
-                kind = "authorize"
-            } else if context.range(of: Data("quick_reply".utf8)) != nil {
-                kind = "ask"
-            } else if context.range(of: Data("request_action".utf8)) != nil {
-                kind = "request_action"
-            } else {
-                kind = nil
-            }
-            if let kind { output.append((id, kind)) }
-            cursor = schemaRange.upperBound
-        }
-        return output
+        walk(root, cid: nil, inQuickReply: false)
+        return result
     }
 
     private static func logicalRecords(inWAL data: Data) -> [Data] {

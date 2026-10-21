@@ -37,7 +37,7 @@ sleep 2
 python3 - "$STATE" "$CID" "$TCID" <<'PY'
 import json,sys
 d=json.load(open(sys.argv[1])); cid=sys.argv[2]; tcid=sys.argv[3]
-assert d['version']==12, d
+assert d['version']==13, d
 assert d.get('pendingInteractions',{}).get(cid,{}).get(tcid)=='interaction.ask', d
 assert sum('|waiting_user|' in key for key in d.get('processedEvents',{}))==1, d
 pending=d.get('resolverState',{}).get('pendingNativeInteractions',{}).get(tcid)
