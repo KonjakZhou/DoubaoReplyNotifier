@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='notifier-regression-') as folder:
             time.sleep(.1)
         raise AssertionError(label+'; runtime='+ (base/'runtime.log').read_text()[-2400:])
     try:
-        wait_assert(lambda: data().get('version')==13,'state migration')
+        wait_assert(lambda: data().get('version')==14,'state migration')
         wait_assert(lambda: not data().get('pendingInteractions',{}).get(cid),'unverified legacy pending no longer blocks')
         assert data().get('quarantinedInteractions',{}).get(cid,{}).get('old-unverified')=='indexeddb.authorize'
         # Exact navigation/shortcut transient, no presentation marker, as captured in reports.

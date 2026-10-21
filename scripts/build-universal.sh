@@ -13,7 +13,7 @@ SDK="$(xcrun --show-sdk-path)"
 for ARCH in arm64 x86_64; do
   swiftc -O -warnings-as-errors -sdk "$SDK" -target "${ARCH}-apple-macosx13.0" \
     -framework AppKit -framework UserNotifications -framework CryptoKit -framework ServiceManagement \
-    "$ROOT/Sources/EventArchitecture.swift" "$ROOT/Sources/PermissionReviewSource.swift" \
+    "$ROOT/Sources/EventArchitecture.swift" "$ROOT/Sources/NativeRoundSource.swift" "$ROOT/Sources/PermissionReviewSource.swift" \
     "$ROOT/Sources/ConversationTitleReader.swift" "$ROOT/Sources/IndexedDBInteractionReader.swift" \
     "$ROOT/Sources/main.swift" -o "$STAGE/$ARCH"
 done
