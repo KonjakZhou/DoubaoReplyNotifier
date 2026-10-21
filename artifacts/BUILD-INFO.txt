@@ -9,7 +9,9 @@ native_round=product+conversation+chat_session_id+query_send_timestamp
 waiting_ownership=run+product+source+receivedAt
 regression=real protocol replay,native round isolation,source schema,existing notification tests
 actual_user_visible_notifications=awaiting user verification
-installed_runtime=not yet upgraded in this turn
+installed_runtime=4.7.6 build20 automatically installed; one exact production process and ready PID verified
+state_migration=current conversation pending=0; old native request preserved in quarantine
+spotlight_boundary=other historical app copies remain indexed; service uses exact /Applications executable path
 ConversationTitleReader.swift_sha256=e430cd3715ef4a8f4d4ea4d8db9983241dce9fedab9edaa4170ff2bb9d886fc9
 EventArchitecture.swift_sha256=b346e4a53a52cdb64e8b6d46217b4e72ac25d26ac53343924482648573d0e3fb
 IndexedDBInteractionReader.swift_sha256=aa6a93727699d200f7dbd85cbabaf8d2677a29cfcb58ebc304bb74a85cf3bf82
